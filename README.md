@@ -1,71 +1,88 @@
 # AutoNOC — a predictive NOC for a simulated LTE network in Sulaymaniyah
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://github.com/kara-nawzad/AutoNOC_Project/actions/workflows/ci.yml/badge.svg)](https://github.com/kara-nawzad/AutoNOC_Project/actions/workflows/ci.yml)
+
 A digital-twin simulation of a 300-tower LTE network in Sulaymaniyah, Iraq,
 with an AI layer that **diagnoses** faults (the Doctor), **predicts** failures
 (the Oracle), **acts** on them (the Commander), and **proves** the acting is
 worth it (the counterfactual study).
 
 Built as a portfolio / learning project. Python 3.12+, FastAPI + Leaflet,
-XGBoost, PyTorch. Deterministic: the same seed produces the same world.
+XGBoost, PyTorch. **Deterministic** — the same seed produces the same world.
 
 ---
 
-## The demo — "Storm over Goizha" (5 minutes)
+## Table of Contents
 
-One cast seed contains the whole story, **emergent** — nothing is scripted.
-`python -m autonoc.scripts.cast_seed --seeds 300` found seed **131**, whose
-exogenous schedules naturally produce:
+- [Features](#features)
+- [Architecture](#architecture)
+- [Project layout](#project-layout)
+- [The demo — "Storm over Goizha"](#the-demo--storm-over-goizha)
+- [Quickstart](#quickstart)
+- [API reference](#api-reference)
+- [Testing](#testing)
+- [Results (honest versions)](#results-honest-versions)
+- [Honest limitations](#honest-limitations)
+- [Invariants](#invariants-why-the-architecture-is-the-way-it-is)
+- [Roadmap](#roadmap)
+- [Tech stack](#tech-stack)
+- [License](#license)
 
-| Beat | What happens | Sim time (seed 131) |
-|---|---|---|
-| Act 0 | Calm opening — crews idle, ~99% availability | D1 00:00 |
-| Act 1 | SLY-eNB-080 (Salim St) degrades; the Oracle flags it, the Commander acts | D1 05:55 |
-| Act 2 | Crew pre-positioned on site before failure | — |
-| Act 3 | **Storm over Goizha (81 km/h) + a natural storm-caused fiber cut** | D1 10:15 |
-| Act 4 | Instant power fault during the storm — no warning, by design | D1 11:20 |
-| Act 5 | Counterfactual table: same seed, AI on vs off | — |
+---
 
-Run it:
+## Features
 
-```powershell
-$env:AUTONOC_SEED = 131
-python -m uvicorn autonoc.api.main:app --port 8000
+| Component | What it does |
+|---|---|
+| **Doctor** (XGBoost) | Diagnoses already-broken nodes from degraded telemetry |
+| **Oracle** (GRU) | Predicts *upcoming* failures from contiguous telemetry windows |
+| **Commander** | Decision-theory layer that acts on predictions (p > 0.4375) |
+| **Counterfactual study** | Proves the AI is worth it — 4 arms, identical schedules per seed |
+| **API + dashboard** | FastAPI backend pushing a Leaflet single-page dashboard |
+
+A 300-tower LTE digital twin with real Sulaymaniyah geography, COST-231
+propagation, dual-core fiber/microwave topology, weather-driven exogenous
+faults, and a fully-tested engine.
+
+---
+
+## Architecture
+
+```
+        ┌──────────────────────────────────────────────┐
+        │  autonoc/engine   (PURE — stdlib only, no I/O)│
+        │  physics · network · faults · dispatch        │
+        │  NOCEngine.step()  owns the clock (I1)        │
+        └──────────────────────┬───────────────────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │  autonoc/ai         │
+                    │  Doctor · Oracle    │
+                    │  batched inference  │
+                    └──────────┬──────────┘
+                               │
+              ┌────────────────▼────────────────┐
+              │  autonoc/api  (FastAPI)         │
+              │  lifespan clock · cursor deltas │
+              │  /api/config is the truth (I5)  │
+              └────────────────┬────────────────┘
+                               │ HTTP / tick-cursor deltas
+                    ┌──────────▼──────────┐
+                    │  autonoc/web        │
+                    │  Leaflet dashboard  │
+                    │  renders, never     │
+                    │  computes (I6)      │
+                    └─────────────────────┘
 ```
 
-Open http://localhost:8000, click **ENABLE AI** in the AI panel (or start
-with `$env:AUTONOC_AI = 1`). At 1× speed one tick ≈ one second, so the acts
-fall at roughly 0:00 / 1:00 / 2:00 / 2:30 of the demo. When the storm hits,
-click **CUT FIBER** for the isolation spectacle (34 alarms → 1 incident) — a
-natural double cut is ~2×/year, far too rare to wait for on camera.
+The engine is deliberately **pure** (stdlib only, no I/O, no framework, no wall
+clock). Everything time-related is owned by `NOCEngine.step()`, called from
+exactly one place in production (a lifespan task in the API) — enforced by the
+invariant tests.
 
----
-
-## Quickstart
-
-```powershell
-python install_autonoc.py                 # unpack the codebase
-pip install -r requirements.txt
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-python -m autonoc.scripts.sanity_check    # headless physics report
-python -m autonoc.ai.dataset              # ~3 min -> data/*.csv
-python -m autonoc.ai.train                # ~40 s  -> Doctor
-python -m autonoc.ai.seqdata              # ~2 min -> data/seq_*.npz
-python -m autonoc.ai.oracle               # ~2 min -> Oracle
-python -m pytest tests/ -q                # 64 passed
-python -m autonoc.scripts.counterfactual --seeds 30 --days 10 --workers 8   # M7
-python -m autonoc.scripts.cast_seed --seeds 5000 --workers 8               # M8
-python -m uvicorn autonoc.api.main:app --reload --port 8000
-```
-
-`data/` is regenerable and does not survive workspace snapshots; if a CSV is
-missing, re-run `dataset` / `seqdata`. The Oracle run also writes
-`models/oracle_stats.npz`, which the live GRU serving requires — re-run it if
-you ever see **RULES MODE** in the dashboard.
-
----
-
-## What's inside
+## Project layout
 
 ```
 autonoc/
@@ -99,6 +116,114 @@ tests/               64 tests: 11 invariant guards + 24 regressions
 ```
 
 ---
+
+## The demo — "Storm over Goizha" (5 minutes)
+
+One cast seed contains the whole story, **emergent** — nothing is scripted.
+`python -m autonoc.scripts.cast_seed --seeds 300` found seed **131**, whose
+exogenous schedules naturally produce:
+
+| Beat | What happens | Sim time (seed 131) |
+|---|---|---|
+| Act 0 | Calm opening — crews idle, ~99% availability | D1 00:00 |
+| Act 1 | SLY-eNB-080 (Salim St) degrades; the Oracle flags it, the Commander acts | D1 05:55 |
+| Act 2 | Crew pre-positioned on site before failure | — |
+| Act 3 | **Storm over Goizha (81 km/h) + a natural storm-caused fiber cut** | D1 10:15 |
+| Act 4 | Instant power fault during the storm — no warning, by design | D1 11:20 |
+| Act 5 | Counterfactual table: same seed, AI on vs off | — |
+
+Run it:
+
+```powershell
+$env:AUTONOC_SEED = 131
+python -m uvicorn autonoc.api.main:app --port 8000
+```
+
+Open http://localhost:8000, click **ENABLE AI** in the AI panel (or start
+with `$env:AUTONOC_AI = 1`). At 1× speed one tick ≈ one second, so the acts
+fall at roughly 0:00 / 1:00 / 2:00 / 2:30 of the demo. When the storm hits,
+click **CUT FIBER** for the isolation spectacle (34 alarms → 1 incident) — a
+natural double cut is ~2×/year, far too rare to wait for on camera.
+
+> Prefer a one-click start? Use `Start-Demo.ps1` (background server, AI
+> auto-on) or `Start-Demo.bat`. Both use relative paths and work from any clone.
+
+---
+
+## Quickstart
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+python -m autonoc.scripts.sanity_check    # headless physics report
+python -m autonoc.ai.dataset              # ~3 min -> data/*.csv
+python -m autonoc.ai.train                # ~40 s  -> Doctor
+python -m autonoc.ai.seqdata              # ~2 min -> data/seq_*.npz
+python -m autonoc.ai.oracle               # ~2 min -> Oracle
+python -m pytest tests/ -q                # 64 passed
+python -m autonoc.scripts.counterfactual --seeds 30 --days 10 --workers 8   # M7
+python -m autonoc.scripts.cast_seed --seeds 5000 --workers 8               # M8
+python -m uvicorn autonoc.api.main:app --reload --port 8000
+```
+
+`data/` is regenerable and does not survive workspace snapshots; if a CSV is
+missing, re-run `dataset` / `seqdata`. The Oracle run also writes
+`models/oracle_stats.npz`, which the live GRU serving requires — re-run it if
+you ever see **RULES MODE** in the dashboard.
+
+## API reference
+
+Base URL: `http://localhost:8000`
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/` | Serves the Leaflet dashboard |
+| `GET` | `/api/config` | Single source of truth (status names/colors, thresholds, map) |
+| `GET` | `/api/delta?since=<tick>` | Cursor-based state deltas (read-only & idempotent) |
+| `GET` | `/api/health` | Status: tick, seed, ai_enabled, ai_policy, paused, speed |
+| `POST` | `/api/control/pause` | Pause the simulation |
+| `POST` | `/api/control/resume` | Resume the simulation |
+| `POST` | `/api/control/step` | Advance one tick |
+| `POST` | `/api/control/speed?value=1.0` | Set speed (0.25–10) |
+| `POST` | `/api/control/inject?node_id&kind` | Inject a fault (1–5) on a node |
+| `POST` | `/api/control/cut-fiber?ring_id&isolate` | Trigger the Act 3 double-cut scenario |
+| `POST` | `/api/control/ai?enabled&auto_approve_seconds` | Toggle the Commander |
+| `POST` | `/api/control/approve/{action_id}` | Approve a Commander action |
+| `POST` | `/api/control/veto/{action_id}` | Veto a Commander action |
+
+Interactive docs are served by FastAPI at `http://localhost:8000/docs`.
+
+**Environment variables:**
+
+| Var | Default | Purpose |
+|---|---|---|
+| `AUTONOC_SEED` | `42` | Simulation seed (the demo uses `131`) |
+| `AUTONOC_AI` | `0` | `1` auto-enables the Commander at boot |
+| `AUTONOC_AUTO_APPROVE` | `0` | Auto-approve Commander actions after N seconds |
+
+---
+
+## Testing
+
+```powershell
+python -m pytest tests/ -q
+```
+
+64 tests across the suite:
+
+- **11 invariant guards** (`test_invariants.py`) — pure-engine, determinism,
+  banned imports via AST, single-source-of-truth, no-preview leakage
+- **24 regression tests** (`test_regressions.py`) — availability, ring reroute,
+  team arrival, fault repair, realistic tower spacing …
+- **8 AI-leakage guards** (`test_ai.py`) — no test-set information in features
+- **13 Commander tests** (`test_commander.py`) — decision-theory behaviour
+- **8 counterfactual tests** (`test_counterfactual.py`)
+
+The suite runs automatically on every push/PR via
+[GitHub Actions](.github/workflows/ci.yml) on both Linux and Windows.
 
 ## Results (honest versions)
 
@@ -189,3 +314,31 @@ Tested, not conversational (tests/test_invariants.py):
 | I10 | exogenous event schedule, generated pre-run, immutable |
 | I11 | features never peek ahead |
 | I12 | no subsystem deleted to improve a number |
+
+---
+
+## Roadmap
+
+- [ ] Add a GitHub Actions badge to the README once CI is green
+- [ ] Publish a screenshot / animated GIF of the dashboard
+- [ ] Add a `.env.example` for the environment variables
+- [ ] Document generating the demo world (M8) in more depth
+- [ ] Package as a proper PyPI-installable project (`pyproject.toml`)
+
+---
+
+## Tech stack
+
+- **Runtime:** Python 3.12+, FastAPI, Uvicorn, Pydantic
+- **AI:** XGBoost, PyTorch (GRU), scikit-learn, NumPy, pandas
+- **Frontend:** Leaflet (bundled, offline-capable), vanilla JS/HTML/CSS
+- **Dev:** pytest, GitHub Actions (Linux + Windows)
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 AutoNOC Project Authors
+
+
+
