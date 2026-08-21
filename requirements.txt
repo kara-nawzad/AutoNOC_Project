@@ -1,0 +1,20 @@
+# AutoNOC v2 — runtime dependencies
+#
+# Install with:
+#   pip install -r requirements.txt
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#     (torch CPU build: the index-url avoids the multi-GB CUDA bundle;
+#      the simulation and both models run fine on CPU)
+
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+
+numpy>=1.26
+pandas>=2.0
+scikit-learn>=1.4
+xgboost>=2.0
+torch>=2.0
+
+# development / tests
+pytest>=8.0

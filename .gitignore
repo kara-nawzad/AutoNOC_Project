@@ -1,0 +1,47 @@
+# ===================== Python =====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.python-version
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# ===================== Virtualenv =====================
+venv/
+.venv/
+env/
+ENV/
+
+# ===================== Test / tooling caches =====================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# ===================== IDE / OS =====================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===================== Runtime =====================
+*.log
+*.err
+
+# ===================== Data (regenerable, too large for GitHub) =====================
+/data/
+*.npz
+
+# ===================== Models (regenerable binaries) =====================
+/models/*.npz
+/models/*.pt

@@ -1,0 +1,258 @@
+{
+  "meta": {
+    "days": 10,
+    "seeds": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30
+    ],
+    "n_seeds": 30
+  },
+  "arms": {
+    "A": {
+      "availability": {
+        "mean": 98.75,
+        "ci95": 0.02
+      },
+      "downtime_tower_min": {
+        "mean": 54033.0,
+        "ci95": 774.98
+      },
+      "episodes": {
+        "mean": 1219.43,
+        "ci95": 13.64
+      },
+      "activated": {
+        "mean": 1158.1,
+        "ci95": 13.34
+      },
+      "pre_empted": {
+        "mean": 0.0,
+        "ci95": 0.0
+      },
+      "masked": {
+        "mean": 61.33,
+        "ci95": 3.33
+      },
+      "unresolved": {
+        "mean": 23.83,
+        "ci95": 1.67
+      },
+      "false_dispatches": {
+        "mean": 0.0,
+        "ci95": 0.0
+      },
+      "crew_hours": {
+        "mean": 773.33,
+        "ci95": 13.48
+      },
+      "repairs": {
+        "mean": 498.17,
+        "ci95": 8.07
+      },
+      "mttr_min": {
+        "mean": 92.82,
+        "ci95": 0.43
+      },
+      "cost_tower_min": {
+        "mean": 104229.0,
+        "ci95": 1200.72
+      }
+    },
+    "B": {
+      "availability": {
+        "mean": 98.75,
+        "ci95": 0.02
+      },
+      "downtime_tower_min": {
+        "mean": 54070.0,
+        "ci95": 773.37
+      },
+      "episodes": {
+        "mean": 1219.43,
+        "ci95": 13.64
+      },
+      "activated": {
+        "mean": 1158.13,
+        "ci95": 13.34
+      },
+      "pre_empted": {
+        "mean": 0.0,
+        "ci95": 0.0
+      },
+      "masked": {
+        "mean": 61.3,
+        "ci95": 3.36
+      },
+      "unresolved": {
+        "mean": 23.83,
+        "ci95": 1.67
+      },
+      "false_dispatches": {
+        "mean": 4.37,
+        "ci95": 0.76
+      },
+      "crew_hours": {
+        "mean": 778.9,
+        "ci95": 13.7
+      },
+      "repairs": {
+        "mean": 498.27,
+        "ci95": 8.08
+      },
+      "mttr_min": {
+        "mean": 92.87,
+        "ci95": 0.42
+      },
+      "cost_tower_min": {
+        "mean": 104384.83,
+        "ci95": 1201.27
+      }
+    },
+    "C": {
+      "availability": {
+        "mean": 98.88,
+        "ci95": 0.02
+      },
+      "downtime_tower_min": {
+        "mean": 48369.0,
+        "ci95": 769.9
+      },
+      "episodes": {
+        "mean": 1219.43,
+        "ci95": 13.64
+      },
+      "activated": {
+        "mean": 716.87,
+        "ci95": 9.79
+      },
+      "pre_empted": {
+        "mean": 448.03,
+        "ci95": 7.53
+      },
+      "masked": {
+        "mean": 54.53,
+        "ci95": 3.14
+      },
+      "unresolved": {
+        "mean": 23.33,
+        "ci95": 1.65
+      },
+      "false_dispatches": {
+        "mean": 3.77,
+        "ci95": 0.73
+      },
+      "crew_hours": {
+        "mean": 781.89,
+        "ci95": 13.71
+      },
+      "repairs": {
+        "mean": 500.53,
+        "ci95": 7.95
+      },
+      "mttr_min": {
+        "mean": 92.89,
+        "ci95": 0.43
+      },
+      "cost_tower_min": {
+        "mean": 84811.33,
+        "ci95": 1006.49
+      }
+    },
+    "D": {
+      "availability": {
+        "mean": 98.96,
+        "ci95": 0.02
+      },
+      "downtime_tower_min": {
+        "mean": 44856.5,
+        "ci95": 743.02
+      },
+      "episodes": {
+        "mean": 1219.43,
+        "ci95": 13.64
+      },
+      "activated": {
+        "mean": 678.23,
+        "ci95": 9.27
+      },
+      "pre_empted": {
+        "mean": 490.63,
+        "ci95": 7.14
+      },
+      "masked": {
+        "mean": 50.57,
+        "ci95": 3.01
+      },
+      "unresolved": {
+        "mean": 22.07,
+        "ci95": 1.59
+      },
+      "false_dispatches": {
+        "mean": 0.03,
+        "ci95": 0.07
+      },
+      "crew_hours": {
+        "mean": 813.4,
+        "ci95": 14.1
+      },
+      "repairs": {
+        "mean": 502.7,
+        "ci95": 7.91
+      },
+      "mttr_min": {
+        "mean": 100.41,
+        "ci95": 0.46
+      },
+      "cost_tower_min": {
+        "mean": 83120.67,
+        "ci95": 981.67
+      }
+    }
+  },
+  "headline": {
+    "saved_vs_A": {
+      "B": {
+        "cost_saved_tower_min": -155.8,
+        "downtime_saved_tower_min": -37.0
+      },
+      "C": {
+        "cost_saved_tower_min": 19417.7,
+        "downtime_saved_tower_min": 5664.0
+      },
+      "D": {
+        "cost_saved_tower_min": 21108.3,
+        "downtime_saved_tower_min": 9176.5
+      }
+    },
+    "pct_of_clairvoyant_downtime_reduction": 61.7,
+    "autonomous_worse_than_no_ai": false
+  }
+}

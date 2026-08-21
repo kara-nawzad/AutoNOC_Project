@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoNOC — Sulaymaniyah</title>
+<link rel="stylesheet" href="/static/leaflet.css"/>
+<link rel="stylesheet" href="/static/styles.css?v=6">
+</head>
+<body>
+<header id="hdr">
+  <div class="logo">AUTO<span>NOC</span></div>
+  <div class="hdr-sub">Sulaymaniyah &middot; LTE 2100&nbsp;MHz</div>
+  <div class="hdr-metrics">
+    <div class="hm"><label>SIM TIME</label><span id="m-time">—</span></div>
+    <div class="hm"><label>AVAILABILITY</label><span id="m-avail" class="big">—</span></div>
+    <div class="hm"><label>HEALTHY</label><span id="m-healthy">—</span></div>
+    <div class="hm"><label>FAULTS</label><span id="m-faults" class="warn">—</span></div>
+    <div class="hm"><label>CREWS OUT</label><span id="m-teams">—</span></div>
+    <div class="hm"><label>MTTR</label><span id="m-mttr">—</span></div>
+  </div>
+  <div class="hdr-ctl">
+    <button id="btn-pause" class="ctl">❚❚</button>
+    <button class="ctl spd" data-speed="1">1×</button>
+    <button class="ctl spd" data-speed="2">2×</button>
+    <button class="ctl spd" data-speed="5">5×</button>
+    <button id="btn-cut" class="ctl danger" title="Trigger a double fiber cut (Act 3)">✂ CUT FIBER</button>
+    <div id="conn" class="conn live"><i></i><span>LIVE</span></div>
+  </div>
+</header>
+<main>
+  <aside id="rail-l">
+    <section class="panel">
+      <h3>Network Status</h3>
+      <div id="status-bars"></div>
+    </section>
+    <section class="panel grow">
+      <h3>Aggregation Sites</h3>
+      <div id="agg-list"></div>
+    </section>
+    <section class="panel">
+      <h3>Field Crews</h3>
+      <div id="team-list"></div>
+    </section>
+  </aside>
+  <div id="map-wrap">
+    <div id="map"></div>
+    <div id="legend"></div>
+  </div>
+  <aside id="rail-r">
+    <section class="panel" id="incident-panel" style="display:none">
+      <h3>Active Incidents</h3>
+      <div id="incidents"></div>
+    </section>
+    <section class="panel" id="ai-panel">
+      <h3>AI Performance</h3>
+      <div id="ai-body">Loading…</div>
+    </section>
+    <section class="panel grow">
+      <h3>Node Inspector</h3>
+      <div id="inspector" class="empty">Select a node on the map</div>
+    </section>
+    <section class="panel logs">
+      <h3>Event Log</h3>
+      <div id="log"></div>
+    </section>
+  </aside>
+</main>
+<script src="/static/leaflet.js"></script>
+<script src="/static/app.js?v=6"></script>
+</body>
+</html>
