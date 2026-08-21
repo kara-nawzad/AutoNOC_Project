@@ -76,8 +76,8 @@ def test_cast_seed_is_verified_by_models():
 
 def test_docs_and_dependencies_exist():
     """M8 deliverables: README with honest limitations + requirements.txt."""
-    readme = (ROOT / "README.md").read_text()
-    reqs = (ROOT / "requirements.txt").read_text()
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    reqs = (ROOT / "requirements.txt").read_text(encoding="utf-8")
     assert "honest limitations" in readme.lower()
     assert "fastapi" in reqs
     assert "xgboost" in reqs
