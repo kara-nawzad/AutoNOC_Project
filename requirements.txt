@@ -6,7 +6,7 @@
 #     (torch CPU build: the index-url avoids the multi-GB CUDA bundle;
 #      the simulation and both models run fine on CPU)
 
-fastapi>=0.110
+fastapi[standard]>=0.110
 uvicorn>=0.29
 pydantic>=2.6
 
@@ -18,3 +18,4 @@ torch>=2.0
 
 # development / tests
 pytest>=8.0
+gradio>=4.0.0
