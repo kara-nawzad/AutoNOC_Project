@@ -1,4 +1,4 @@
-app = "autonoc-project"
+app = "autonoc-project-2026"
 primary_region = "iad"
 
 [build]
