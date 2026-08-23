@@ -91,6 +91,7 @@ function initMap() {
     ).addTo(map);
   } catch (e) { onScreenError('basemap tiles failed (need internet): ' + e); }
   canvas = L.canvas({ padding: 0.5 });
+  map.addLayer(canvas);
   mapOk = true;
 
   // EPC cores and depot
