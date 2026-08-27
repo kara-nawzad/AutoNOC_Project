@@ -2,4 +2,4 @@ fastapi[standard]
 uvicorn
 torch --index-url https://pytorch.org
 pytest
-
+numpy
