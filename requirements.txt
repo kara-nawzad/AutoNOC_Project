@@ -3,3 +3,12 @@ uvicorn
 torch --index-url https://pytorch.org
 pytest
 numpy
+pandas
+scikit-learn
+xgboost
+# Note: the trailing "--index-url https://pytorch.org" on the torch line above
+# is ignored by pip's requirements-file parser (file options must be on their
+# own line), so torch installs from PyPI (CUDA build, large download). The
+# deployment that currently works on fly.io uses this exact line — keep it.
+# For a slimmer CPU-only install, run separately:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
