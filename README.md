@@ -23,6 +23,7 @@ XGBoost, PyTorch. **Deterministic** — the same seed produces the same world.
 - [Quickstart](#quickstart)
 - [API reference](#api-reference)
 - [Testing](#testing)
+- [Project notes (full deep-dive reference)](docs/PROJECT_NOTES.md)
 - [Results (honest versions)](#results-honest-versions)
 - [Honest limitations](#honest-limitations)
 - [Invariants](#invariants-why-the-architecture-is-the-way-it-is)
@@ -113,6 +114,7 @@ autonoc/
     cast_seed.py        M8: search seeds for the demo world
 tests/               64 tests: 11 invariant guards + 24 regressions
                      + 8 AI-leakage guards + 13 Commander + 8 counterfactual
+docs/                PROJECT_NOTES.md — the full deep-dive reference
 ```
 
 ---
