@@ -12,4 +12,4 @@ FROM python:3.12.14-slim
 WORKDIR /app
 COPY --from=builder /app/.venv .venv/
 COPY . .
-CMD ["python", "-m", "uvicorn", "autonoc.api.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["/app/.venv/bin/python", "-m", "uvicorn", "autonoc.api.main:app", "--host", "0.0.0.0", "--port", "8080"]
