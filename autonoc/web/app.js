@@ -85,11 +85,11 @@ function initMap() {
     zoomControl: true, preferCanvas: false, attributionControl: false
   });
   try {
-     L.tileLayer(
-      'https://{s}://{z}/{x}/{y}.png',
+       L.tileLayer(
+      'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
       { 
-        maxZoom: 20,
-        attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors &copy; <a href="https://carto.com">CARTO</a>'
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
       }
     ).addTo(map);
 
