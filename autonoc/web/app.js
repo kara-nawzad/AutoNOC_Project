@@ -85,11 +85,11 @@ function initMap() {
     zoomControl: true, preferCanvas: false, attributionControl: false
   });
   try {
-    L.tileLayer(
-      'https://stadiamaps.com{z}/{x}/{y}{r}.png',
+   L.tileLayer(
+      'https://{s}://{z}/{x}/{y}.png',
       { 
         maxZoom: 20,
-        attribution: '&copy; Stadia Maps, &copy; OpenMapTiles, &copy; OpenStreetMap contributors'
+        attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors &copy; <a href="https://carto.com">CARTO</a>'
       }
     ).addTo(map);
   } catch (e) { onScreenError('basemap tiles failed (need internet): ' + e); }
