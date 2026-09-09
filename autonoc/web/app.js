@@ -85,13 +85,14 @@ function initMap() {
     zoomControl: true, preferCanvas: false, attributionControl: false
   });
   try {
-   L.tileLayer(
+     L.tileLayer(
       'https://{s}://{z}/{x}/{y}.png',
       { 
         maxZoom: 20,
         attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors &copy; <a href="https://carto.com">CARTO</a>'
       }
     ).addTo(map);
+
   } catch (e) { onScreenError('basemap tiles failed (need internet): ' + e); }
   canvas = L.canvas({ padding: 0.5 });
   mapOk = true;
