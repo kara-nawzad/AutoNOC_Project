@@ -86,12 +86,16 @@ function initMap() {
   });
   try {
     L.tileLayer(
-      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-      { maxZoom: 19, subdomains: 'abcd' }
+      'https://stadiamaps.com{z}/{x}/{y}{r}.png',
+      { 
+        maxZoom: 20,
+        attribution: '&copy; Stadia Maps, &copy; OpenMapTiles, &copy; OpenStreetMap contributors'
+      }
     ).addTo(map);
   } catch (e) { onScreenError('basemap tiles failed (need internet): ' + e); }
   canvas = L.canvas({ padding: 0.5 });
   mapOk = true;
+
 
   // EPC cores and depot
   const p = CFG.epc_primary, b = CFG.epc_backup, d = CFG.depot;
