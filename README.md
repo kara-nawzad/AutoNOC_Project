@@ -25,6 +25,28 @@ XGBoost, PyTorch. **Deterministic** — the same seed produces the same world.
 
 ---
 
+## React command center
+
+The new command center lives in [`frontend/`](frontend/README.md): React,
+TypeScript, Tailwind, Framer Motion and React Leaflet, with server-derived
+analytics, a live alarm/approval rail, site inspector, scenario controls and
+responsive layouts. Build it before starting the API:
+
+```sh
+npm ci --prefix frontend
+npm run build --prefix frontend
+python -m uvicorn autonoc.api.main:app --host 0.0.0.0 --port 8000
+```
+
+FastAPI serves `autonoc/web/dist` at `/`; Docker builds these assets automatically.
+For Vite development, start the API on port 8000 and run
+`npm run dev --prefix frontend` (port 5173, same-origin API proxy).
+See the [frontend guide](frontend/README.md) for contracts, testing, controls and
+honest simulator limitations. The earlier vanilla frontend is kept only as an
+unbuilt-checkout fallback.
+
+---
+
 ## Table of Contents
 
 - [Features](#features)
@@ -215,7 +237,7 @@ python -m autonoc.ai.dataset              # ~3 min -> data/*.csv
 python -m autonoc.ai.train                # ~40 s  -> Doctor
 python -m autonoc.ai.seqdata              # ~2 min -> data/seq_*.npz
 python -m autonoc.ai.oracle               # ~2 min -> Oracle
-python -m pytest tests/ -q                # 64 passed
+python -m pytest tests/ -q                # includes dashboard API contracts
 python -m autonoc.scripts.counterfactual --seeds 30 --days 10 --workers 8   # M7
 python -m autonoc.scripts.cast_seed --seeds 5000 --workers 8               # M8
 python -m uvicorn autonoc.api.main:app --reload --port 8000
@@ -264,7 +286,7 @@ Interactive docs are served by FastAPI at `http://localhost:8000/docs`.
 python -m pytest tests/ -q
 ```
 
-87 tests across the suite:
+100 Python tests across the suite (five data-dependent tests skip without generated datasets), plus frontend unit/browser tests:
 
 - **11 invariant guards** (`test_invariants.py`) — pure-engine, determinism,
   banned imports via AST, single-source-of-truth, no-preview leakage
@@ -275,13 +297,19 @@ python -m pytest tests/ -q
 - **12 AI-leakage guards** (`test_ai.py`) — no test-set information in features
 - **14 Commander tests** (`test_commander.py`) — decision-theory behaviour
 - **7 counterfactual tests** (`test_counterfactual.py`)
-- **6 polish tests** (`test_polish.py`) — API payload/schema hygiene
+- **6 polish tests** (`test_polish.py`) — demo and documentation checks
+- **13 dashboard contract tests** (`test_dashboard.py`) — snapshots, paused writes, history, controls and presentation
 
-CI: the committed [workflow](.github/workflows/ci.yml) is deploy-only; a
-test-gated replacement (ubuntu, Python 3.12, deploy `needs: test`) is ready
-at [`docs/ci-proposed.yml`](docs/ci-proposed.yml) — copy it over the workflow
-file and commit with workflow-write access to activate it (the app token on
-the branch that prepared it lacks GitHub's `workflows` permission).
+The complete build/test/deploy workflow is saved in
+[`docs/ci-proposed.yml`](docs/ci-proposed.yml). It builds and tests the React app,
+runs the Python suite and browser tests, and gates Fly.io deployment on a
+successful main-branch push. **It is not active yet:** the GitHub connection
+could not update workflow files. The existing
+[active workflow](.github/workflows/ci.yml) remains deploy-only and also runs on
+pull requests. To activate the proposed version, replace the active file with
+`docs/ci-proposed.yml` using GitHub's web editor or workflow-write permission.
+
+---
 
 ## Results (honest versions)
 
@@ -391,8 +419,8 @@ Tested, not conversational (tests/test_invariants.py):
 
 - **Runtime:** Python 3.12+, FastAPI, Uvicorn, Pydantic
 - **AI:** XGBoost, PyTorch (GRU), scikit-learn, NumPy, pandas
-- **Frontend:** Leaflet (bundled, offline-capable), vanilla JS/HTML/CSS
-- **Dev:** pytest, GitHub Actions (Linux + Windows)
+- **Frontend:** React 18, TypeScript, Vite, Tailwind, Framer Motion, React Leaflet; bundled fonts, online basemap
+- **Dev:** pytest, Vitest, Playwright, GitHub Actions (Linux)
 
 ---
 

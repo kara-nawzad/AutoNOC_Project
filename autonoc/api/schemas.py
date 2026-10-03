@@ -121,17 +121,61 @@ class RingModel(BaseModel):
     path: list[list[float]]
     circumference_km: float
     cut: Optional[dict] = None
+    cuts: list[dict] = Field(default_factory=list)
+    isolated: bool = False
+
+
+class TelemetrySample(BaseModel):
+    tick: int
+    sim_time: str
+    availability: float
+    incidents: int
+    power_events: int
+    throughput_gbps: float
+    drop_rate: float
+    prb: float
+    online: int
+    degraded: int
+    offline: int
+
+
+class ActiveIncident(BaseModel):
+    id: str
+    node_id: Optional[str]
+    title: str
+    detail: str
+    severity: str
+    affected: int
+    since_tick: int
+    dispatched: bool
+
+
+class DashboardModel(BaseModel):
+    current: TelemetrySample
+    history: list[TelemetrySample]
+    traffic_change_pct: Optional[float]
+    operational_pct: float
+    incidents: list[ActiveIncident]
+    top_cells: list[dict]
+    forecast: Optional[dict]
+    actionable_predictions: int
+    power: list[dict]
+    active_ats: int
+    fuel_thefts: int
+    fleet: dict[str, int]
 
 
 class DeltaResponse(BaseModel):
-    """Cursor-based delta. Read-only and idempotent.
+    """Bounded current snapshot at the legacy tick-cursor endpoint.
 
-    v1 used dirty flags cleared after each response, so a single dropped poll
-    lost that update permanently and the client silently desynced. A tick
-    cursor lets the client re-sync instead of drifting.
+    resync=True tells consumers to replace nodes, teams and recent logs. This
+    avoids dirty-flag races without changing the simulation's tick semantics.
     """
     tick: int
     resync: bool
+    run_id: str
+    control: dict
+    dashboard: DashboardModel
     kpis: KPIModel
     agg: list[AggModel]
     nodes: list[NodeModel]
@@ -172,3 +216,4 @@ class ConfigResponse(BaseModel):
     num_teams: int
     tick_minutes: int
     break_even_precision: float
+    presentation: dict
