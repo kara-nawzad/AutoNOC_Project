@@ -11,8 +11,9 @@ THREE v1 bugs are structurally impossible here:
    path. v1 moved the tick into the handler and called it an optimisation;
    the work did not disappear, it just landed on the client's latency path.
 
-3. Deltas use a tick cursor, not dirty flags. With flags, one dropped poll
-   loses that update forever and the client silently desyncs.
+3. The legacy tick-cursor endpoint sends bounded full snapshots (resync=True).
+   Physical changes, same-tick controls and warning flips reach every reader;
+   no global dirty flags are consumed by GET requests.
 """
 from __future__ import annotations
 
@@ -20,16 +21,20 @@ import asyncio
 import os
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from autonoc.engine import config as C
 from autonoc.engine.engine import NOCEngine
 
+from . import presentation as P
 from . import schemas as S
 
 BASE_TICK_SECONDS = 1.0
@@ -51,8 +56,9 @@ _slow_ticks = 0
 # None until then so module import never starts threads.
 worker = None
 
-# derived-state cursor for the predictive `warn` flag (see _node_dicts)
-_warn_sent: dict[str, bool] = {}
+# A process/run identity lets clients discard history after a server restart.
+_run_id = uuid.uuid4().hex
+_history = P.History()
 
 
 def _step_locked() -> None:
@@ -61,6 +67,7 @@ def _step_locked() -> None:
     t0 = time.perf_counter()
     with _lock:
         engine.step()
+        _history.record(engine)
     dt = (time.perf_counter() - t0) * 1000
     if dt > 100.0:
         _slow_ticks += 1
@@ -98,7 +105,8 @@ async def lifespan(app: FastAPI):
         pass
 
 
-app = FastAPI(title="AutoNOC", version="2.0", lifespan=lifespan)
+app = FastAPI(title="AutoNOC", version="3.0", lifespan=lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
                    allow_headers=["*"])
 
@@ -110,12 +118,14 @@ async def no_cache_dashboard(request, call_next):
     A stale cached index.html/app.js was the root cause of the long-running
     "page loads but everything is empty" bug: the browser kept resurrecting
     an old frontend even after the backend was fixed. HTML and API responses
-    are served with Cache-Control: no-store; static assets with no-cache so
-    the browser always revalidates.
+    are served with Cache-Control: no-store. Legacy assets revalidate; the
+    Vite assets have content hashes and can safely be cached immutably.
     """
     response = await call_next(request)
     path = request.url.path
-    if path.startswith("/static/"):
+    if path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
     else:
         response.headers["Cache-Control"] = "no-store"
@@ -150,12 +160,13 @@ async def get_config():
                     "lon": C.EPC_BACKUP[2], "backhaul": C.EPC_BACKUP[3]},
         depot={"lat": C.DEPOT_LAT, "lon": C.DEPOT_LON},
         agg_sites=[{"id": s[0], "name": s[1], "lat": s[2], "lon": s[3],
-                    "nodes": s[4], "clutter": s[5], "color": s[6]}
+                    "nodes": len(engine.net.agg_sites[s[0]].node_ids), "clutter": s[5], "color": s[6]}
                    for s in C.AGG_SITES],
         num_nodes=C.NUM_NODES,
         num_teams=C.NUM_TEAMS,
         tick_minutes=C.TICK_MINUTES,
         break_even_precision=round(C.BREAK_EVEN_PRECISION, 4),
+        presentation=P.config_payload(),
     )
 
 
@@ -181,32 +192,18 @@ def _agg_payload() -> list[dict]:
 
 
 def _node_dicts(only_changed_since: int | None = None) -> list[dict]:
-    """Node payloads + the predictive rApp flag.
+    """Complete current node readouts, independent of who polled before us.
 
-    `warn` marks a node whose live Commander verdict sits at or above the
-    cost-derived break-even — the dashboard renders it with a WARNING-class
-    sonar ripple BEFORE it turns red. The comparison uses the served config
-    threshold; the frontend still computes nothing (I5/I6).
-
-    A verdict flip does not touch last_changed_tick, so delta clients would
-    miss it; the server therefore also emits a node whose warn state differs
-    from what was last sent. This is a derived-state cursor, not a v1-style
-    dirty flag: it cannot lose engine updates, and lag > MAX_DELTA_LAG still
-    forces a full resync.
+    Physical telemetry changes each tick without last_changed_tick updates.
+    For 300 nodes, bounded snapshots are safer than a lossy dirty-flag delta.
+    This also delivers warning flips and controls performed while paused.
     """
     out = []
     for n in engine.nodes:
         v = engine.ai_verdicts.get(n.node_id) if engine.ai_enabled else None
         warn = bool(v and n.status == C.STATUS_HEALTHY
-                    and float(v.get("p_fail", 0.0)) >= C.BREAK_EVEN_PRECISION)
-        if (only_changed_since is not None
-                and n.last_changed_tick <= only_changed_since
-                and _warn_sent.get(n.node_id, False) == warn):
-            continue
-        d = n.to_dict()
-        d["warn"] = warn
-        _warn_sent[n.node_id] = warn
-        out.append(d)
+                    and float(v.get("p_fail", 0.0)) > C.BREAK_EVEN_PRECISION)
+        out.append({**n.to_dict(), "warn": warn})
     return out
 
 
@@ -223,7 +220,12 @@ def _ring_payload() -> list[dict]:
                    "cause": c.cause}
         out.append({"id": ring.ring_id, "nodes": ring.node_ids, "path": path,
                     "circumference_km": round(ring.circumference_km, 2),
-                    "cut": cut})
+                    "cut": cut, "isolated": ring.is_isolated,
+                    "cuts": [{"lat": c.lat, "lon": c.lon,
+                              "seg": c.segment.seg_id, "cause": c.cause,
+                              "path": [[c.segment.from_lat, c.segment.from_lon],
+                                       [c.segment.to_lat, c.segment.to_lon]]}
+                             for c in ring.cuts]})
     return out
 
 
@@ -239,6 +241,10 @@ def _ai_payload() -> dict:
 def _snapshot(resync: bool) -> dict:
     return {
         "tick": engine.tick, "resync": resync, "kpis": engine.kpis(),
+        "run_id": _run_id,
+        "control": {"paused": engine.paused, "speed": _speed, "seed": engine.seed,
+                    "auto_approve_seconds": worker.auto_approve_seconds if worker else 0},
+        "dashboard": P.dashboard(engine, _history),
         "agg": _agg_payload(),
         "nodes": _node_dicts(),
         "teams": [t.to_dict() for t in engine.teams],
@@ -256,23 +262,15 @@ async def get_full():
 
 @app.get("/api/delta", response_model=S.DeltaResponse)
 async def get_delta(since: int = Query(0, ge=0)):
-    """READ ONLY. Never advances the simulation.
+    """Read-only, replay-safe bounded snapshot at the existing delta endpoint.
 
-    Idempotent: calling twice with the same cursor returns the same data.
+    The legacy tick cursor is retained. Nodes/teams/logs are complete bounded
+    readouts, so paused same-tick mutations and dropped polls are never lost.
+    No request changes delivery state for another client.
     """
     with _lock:
-        if since <= 0 or engine.tick - since > C.MAX_DELTA_LAG:
-            return _snapshot(resync=True)
-        return {
-            "tick": engine.tick, "resync": False, "kpis": engine.kpis(),
-            "agg": _agg_payload(),
-            "nodes": _node_dicts(only_changed_since=since),
-            "teams": [t.to_dict() for t in engine.teams
-                      if t.last_changed_tick > since],
-            "logs": [l for l in engine.logs if l["tick"] > since][-60:],
-            "rings": _ring_payload(),
-            "ai": _ai_payload(),
-        }
+        # Always mark complete snapshots so legacy consumers replace logs too.
+        return _snapshot(resync=True)
 
 
 @app.get("/api/health")
@@ -286,13 +284,15 @@ async def health():
 # ------------------------------------------------------------------ control
 @app.post("/api/control/pause")
 async def pause():
-    engine.paused = True
+    with _lock:
+        engine.paused = True
     return {"paused": True}
 
 
 @app.post("/api/control/resume")
 async def resume():
-    engine.paused = False
+    with _lock:
+        engine.paused = False
     return {"paused": False}
 
 
@@ -332,7 +332,7 @@ async def inject(node_id: str, kind: int = Query(3, ge=1, le=5)):
 @app.post("/api/control/cut-fiber")
 async def cut_fiber(ring_id: int = Query(0, ge=0, le=20),
                     isolate: bool = Query(True),
-                    cause: str = Query("construction")):
+                    cause: str = Query("construction", pattern="^(construction|storm|equipment)$")):
     """Trigger the Act 3 scenario: a double cut isolates a whole ring."""
     with _lock:
         return engine.cut_fiber(ring_id, isolate=isolate, cause=cause)
@@ -367,9 +367,22 @@ async def veto(action_id: int):
 
 
 # ------------------------------------------------------------------ static
-app.mount("/static", StaticFiles(directory="autonoc/web"), name="static")
+# Absolute paths work under both Uvicorn and the multi-stage Docker image.
+_WEB = Path(__file__).resolve().parents[1] / "web"
+_DIST = _WEB / "dist"
+app.mount("/static", StaticFiles(directory=str(_WEB)), name="static")
+app.mount("/assets", StaticFiles(directory=str(_DIST / "assets"), check_dir=False), name="assets")
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+async def favicon():
+    path = _DIST / "favicon.svg"
+    if not path.exists():
+        raise HTTPException(404)
+    return FileResponse(path)
 
 
 @app.get("/")
 async def index():
-    return FileResponse("autonoc/web/index.html")
+    built = _DIST / "index.html"
+    return FileResponse(built if built.exists() else _WEB / "index.html")

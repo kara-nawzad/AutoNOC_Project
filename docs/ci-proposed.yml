@@ -1,3 +1,4 @@
+# HISTORICAL: superseded by the active workflow, which builds/tests React and restricts deploy to main pushes.
 # READY-TO-USE CI WORKFLOW — not active from this path.
 #
 # GitHub's fine-grained app token used for this branch lacks the `workflows`

@@ -257,8 +257,8 @@ STATUS_NAMES: Final = {
     3: "VSWR Alarm", 4: "Power Failure", 5: "Backhaul Isolated",
 }
 STATUS_COLORS: Final = {
-    0: "#00F5A0", 1: "#00F2FE", 2: "#FF9600",
-    3: "#FF2A6D", 4: "#FF6B00", 5: "#6B7280",
+    0: "#10b981", 1: "#06b6d4", 2: "#f59e0b",
+    3: "#fb923c", 4: "#f43f5e", 5: "#f43f5e",
 }
 
 # ITU-T X.733 perceived severity — the international alarm standard every

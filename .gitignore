@@ -46,3 +46,10 @@ data/*.npz
 # Trained artifacts under models/ ARE committed: a fresh clone (and the
 # fly.io build from the GitHub source) must boot in ML mode, not rules mode.
 # Everything else stays out of git — data/ is regenerable from the engine.
+
+# React command center (reproducible from frontend/package-lock.json)
+node_modules/
+/autonoc/web/dist/
+/frontend/test-results/
+/frontend/playwright-report/
+*.tsbuildinfo
