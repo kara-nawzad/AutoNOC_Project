@@ -1,62 +1,88 @@
-# HISTORICAL: superseded by the active workflow, which builds/tests React and restricts deploy to main pushes.
-# READY-TO-USE CI WORKFLOW — not active from this path.
-#
-# GitHub's fine-grained app token used for this branch lacks the `workflows`
-# permission, so `.github/workflows/ci.yml` could not be updated remotely.
-# To activate: copy this file over `.github/workflows/ci.yml` and commit it
-# with an account that has workflow-write access (any human push works).
-#
-# What it adds over the committed deploy-only workflow: a real test job
-# (ubuntu-latest, Python 3.12, CPU-only torch wheel first so the multi-GB
-# CUDA wheel is skipped), and the fly.io deploy now `needs: test` — a red
-# suite stops the deploy.
+# PROPOSED WORKFLOW — saved here because the GitHub connection lacks workflow-write permission.
+# This file is not active from the docs directory. To activate it, use the GitHub
+# web editor (or an authorized connection) to replace .github/workflows/ci.yml
+# with this content. The current active workflow remains deploy-only.
 
 name: CI & Deploy
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   test:
-    name: Test suite (ubuntu)
+    name: Build and test command center
     runs-on: ubuntu-latest
+    env:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
-
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          # CPU-only torch first (slim, as documented in requirements.txt);
-          # the later `-r requirements.txt` sees torch satisfied and skips
-          # the multi-GB CUDA wheel.
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
-
-      - name: Run tests
+      - name: Build and unit-test frontend
+        run: |
+          npm ci --prefix frontend
+          npm run build --prefix frontend
+          npm test --prefix frontend
+      - name: Test engine and API contracts
         run: python -m pytest tests/ -q
+      - name: Browser smoke tests
+        working-directory: frontend
+        run: |
+          npx playwright install --with-deps chromium
+          cd ..
+          python -m uvicorn autonoc.api.main:app --host 0.0.0.0 --port 8000 > server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID"' EXIT
+          python - <<'PY'
+          import time, urllib.request
+          for _ in range(60):
+              try:
+                  urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)
+                  break
+              except Exception:
+                  time.sleep(1)
+          else:
+              raise SystemExit('API did not become ready')
+          PY
+          npm run test:e2e --prefix frontend
+      - name: Browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-results
+          path: frontend/test-results
+          if-no-files-found: ignore
 
   deploy:
     name: Deploy to Fly.io
-    runs-on: ubuntu-latest
     needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@master
-
-      - name: Deploy app
-        run: flyctl deploy --remote-only
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

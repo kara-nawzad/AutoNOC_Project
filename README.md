@@ -300,10 +300,14 @@ python -m pytest tests/ -q
 - **6 polish tests** (`test_polish.py`) — demo and documentation checks
 - **13 dashboard contract tests** (`test_dashboard.py`) — snapshots, paused writes, history, controls and presentation
 
-CI builds and unit-tests the React app, runs the Python suite, and exercises
-browser workflows before deployment. Fly.io deployment runs **only** after a
-successful main-branch push, not from pull-request events. See the active
-[workflow](.github/workflows/ci.yml). The older `docs/ci-proposed.yml` is historical.
+The complete build/test/deploy workflow is saved in
+[`docs/ci-proposed.yml`](docs/ci-proposed.yml). It builds and tests the React app,
+runs the Python suite and browser tests, and gates Fly.io deployment on a
+successful main-branch push. **It is not active yet:** the GitHub connection
+could not update workflow files. The existing
+[active workflow](.github/workflows/ci.yml) remains deploy-only and also runs on
+pull requests. To activate the proposed version, replace the active file with
+`docs/ci-proposed.yml` using GitHub's web editor or workflow-write permission.
 
 ---
 

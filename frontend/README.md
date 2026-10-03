@@ -135,7 +135,9 @@ injection, cuts, map layers, fleet/history, mobile overflow, approval rollback,
 veto, reconnect, and reduced motion. Python tests cover snapshot completeness,
 multiple readers, same-tick controls, read-only history and derived metrics.
 
-The committed CI builds and tests both sides before deploying; deployment is
-restricted to main-branch push events. No deployment was performed during the
-redesign. A production Docker build must still be validated where Docker and
-the PyTorch CPU wheel host are available.
+The proposed CI in `../docs/ci-proposed.yml` builds and tests both sides before
+deploying, restricted to main-branch push events. It is saved but **not active**
+because the GitHub connection lacks workflow-write permission. The existing
+active workflow remains deploy-only and can run on main pushes and pull requests.
+A production Docker build must still be validated where Docker and the PyTorch
+CPU wheel host are available.
