@@ -24,7 +24,7 @@ import pathlib
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import (brier_score_loss, classification_report,
+from sklearn.metrics import (brier_score_loss,
                              confusion_matrix, precision_recall_fscore_support)
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
@@ -105,7 +105,7 @@ def main() -> None:
     print(f"\n  train {len(train):>8,} rows   seed {train.seed.iloc[0]}")
     print(f"  val   {len(val):>8,} rows   seed {val.seed.iloc[0]}")
     print(f"  test  {len(test):>8,} rows   seed {test.seed.iloc[0]}")
-    print(f"  episodes disjoint across all splits: yes")
+    print("  episodes disjoint across all splits: yes")
 
     tw = test["weight"].to_numpy()
     true_prev = float((test.label != C.STATUS_HEALTHY) @ tw / tw.sum())
@@ -128,9 +128,9 @@ def main() -> None:
 
     b0 = np.full_like(yte, C.STATUS_HEALTHY)
     acc_b0 = float((b0 == yte) @ tw / tw.sum())
-    print(f"\n  B0  always predict healthy")
+    print("\n  B0  always predict healthy")
     print(f"      accuracy {acc_b0:.4f}  <-- higher than any honest model")
-    print(f"      recall on faults: 0.000")
+    print("      recall on faults: 0.000")
     print(f"      This is why accuracy is a vanity metric at {true_prev:.1%} "
           f"prevalence.")
 
@@ -141,7 +141,7 @@ def main() -> None:
     b1[test.voltage.to_numpy() < 11.0] = C.STATUS_POWER
     b1[test.cpu_load.to_numpy() > C.THRESH_CPU] = C.STATUS_CONGESTION
     m_b1 = _fault_level_metrics(yte, b1, tw)
-    print(f"\n  B1  simple thresholds (v1's actual behaviour)")
+    print("\n  B1  simple thresholds (v1's actual behaviour)")
     print(f"      precision {m_b1['precision']:.3f}  recall {m_b1['recall']:.3f}"
           f"  FPR {m_b1['false_positive_rate']:.4f}")
 
@@ -154,8 +154,8 @@ def main() -> None:
     cw = {int(c): float(len(ytr) / (len(classes) * n))
           for c, n in zip(classes, counts)}
     w_tr = np.array([cw[int(v)] for v in ytr], dtype=np.float32)
-    print(f"\n  class weights (no SMOTE — interpolating telemetry would")
-    print(f"  produce physically impossible half-overheated nodes):")
+    print("\n  class weights (no SMOTE — interpolating telemetry would")
+    print("  produce physically impossible half-overheated nodes):")
     for c in sorted(cw):
         print(f"    {C.STATUS_NAMES[c]:22} {cw[c]:7.2f}")
 
@@ -180,7 +180,7 @@ def main() -> None:
     per_class = _weighted_report(yte, pred, tw, "per class")
     m = _fault_level_metrics(yte, pred, tw)
 
-    print(f"\n  fault vs healthy (what the Commander acts on)")
+    print("\n  fault vs healthy (what the Commander acts on)")
     print(f"    precision            {m['precision']:.3f}")
     print(f"    recall               {m['recall']:.3f}")
     print(f"    false positive rate  {m['false_positive_rate']:.4f}"

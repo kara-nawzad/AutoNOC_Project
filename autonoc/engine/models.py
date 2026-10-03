@@ -77,9 +77,6 @@ class ENodeB:
     # (measured SNR 0.08); the coarse branch gives SNR 6.93.
     hist_fine: Deque[dict] = field(
         default_factory=lambda: deque(maxlen=C.HISTORY_FINE))
-    hist_coarse: Deque[dict] = field(
-        default_factory=lambda: deque(maxlen=C.HISTORY_COARSE))
-    _hour_buffer: list = field(default_factory=list)
 
     # M6 — Commander state. Defaults are inert: with ai_enabled=False (and
     # therefore no verdicts and no actions) these never change, so determinism
@@ -90,7 +87,7 @@ class ENodeB:
 
     # -------------------------------------------------- history
     def snapshot(self, tick: int) -> None:
-        """Append to the fine buffer; roll up hourly into the coarse buffer."""
+        """Append one telemetry row to the fine history buffer."""
         row = {
             "rsrp": self.rsrp, "sinr": self.sinr, "s11": self.s11,
             "latency": self.latency, "jitter": self.jitter,
@@ -100,31 +97,6 @@ class ENodeB:
             "dust": self.dust_accum,
         }
         self.hist_fine.append(row)
-        self._hour_buffer.append(row)
-        if len(self._hour_buffer) >= C.TICKS_PER_HOUR:
-            # Single pass computing sum and sum-of-squares per key.
-            # The naive two-pass version was the #2 cost in the tick profile
-            # (1.17M generator calls); this keeps the same result with one
-            # traversal and no intermediate lists.
-            buf = self._hour_buffer
-            n = len(buf)
-            totals: dict[str, float] = {}
-            sqsums: dict[str, float] = {}
-            for r in buf:
-                for k, v in r.items():
-                    totals[k] = totals.get(k, 0.0) + v
-                    sqsums[k] = sqsums.get(k, 0.0) + v * v
-            agg = {}
-            inv_n = 1.0 / n
-            for k, tot in totals.items():
-                m = tot * inv_n
-                agg[f"{k}_mean"] = m
-                # aggregation divides noise by sqrt(n) — this is what makes
-                # slow dust degradation visible to the Oracle
-                var = (sqsums[k] - tot * m) / (n - 1) if n > 1 else 0.0
-                agg[f"{k}_std"] = math.sqrt(var) if var > 0.0 else 0.0
-            self.hist_coarse.append(agg)
-            buf.clear()
 
     def roll_mean(self, key: str) -> float:
         if not self.hist_fine:

@@ -53,7 +53,7 @@ def main(seed: int = 42, days: int = 7) -> None:
                   f"(C={site.clutter_c:+.0f})")
 
     temps = [n.temperature for n in healthy]
-    print(f"\n--- temperature ---")
+    print("\n--- temperature ---")
     print(f"  mean {statistics.mean(temps):.1f} C  "
           f"min {min(temps):.1f}  max {max(temps):.1f}")
 
@@ -76,7 +76,7 @@ def main(seed: int = 42, days: int = 7) -> None:
         print(f"  {t.name:16} {t.skill:8} {t.state:10} missions={t.dispatch_count}")
 
     dust = [n.dust_accum for n in e.nodes]
-    print(f"\n--- dust accumulation (drives the slow signature) ---")
+    print("\n--- dust accumulation (drives the slow signature) ---")
     print(f"  mean {statistics.mean(dust):.3f}  max {max(dust):.3f}")
 
     print("\n--- last 8 log lines ---")

@@ -344,7 +344,6 @@ async def set_ai(enabled: bool = Query(True),
                  auto_approve_seconds: float = Query(C.AUTO_APPROVE_SECONDS,
                                                      ge=0, le=600)):
     """Toggle the Commander and (for demos) auto-approve-after-N-seconds."""
-    global worker
     with _lock:
         engine.ai_enabled = enabled
         if not enabled:

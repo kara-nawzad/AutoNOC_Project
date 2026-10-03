@@ -17,7 +17,6 @@ back to rule verdicts, which is the documented model-free path).
 """
 from __future__ import annotations
 
-import pytest
 
 from autonoc.engine import config as C
 from autonoc.engine.engine import NOCEngine

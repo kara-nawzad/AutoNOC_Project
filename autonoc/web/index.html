@@ -1,73 +1,209 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AutoNOC — Sulaymaniyah · Non-RT RIC</title>
-<link rel="stylesheet" href="/static/leaflet.css"/>
-<link rel="stylesheet" href="/static/styles.css?v=7">
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AutoNOC — Sulaymaniyah Non-RT RIC Operations</title>
+<meta name="description" content="O-RAN Non-RT RIC operations console: RCA rApp, PdM rApp and A1 policy enforcement over a 300-site LTE digital twin of Sulaymaniyah."/>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/leaflet.css?v=8"/>
+<link rel="stylesheet" href="/static/styles.css?v=8"/>
 </head>
 <body>
-<header id="hdr">
-  <div class="logo">AUTO<span>NOC</span></div>
-  <div class="hdr-sub">Sulaymaniyah &middot; LTE 2100&nbsp;MHz &middot; O-RAN Non-RT&nbsp;RIC</div>
-  <div class="hdr-metrics">
-    <div class="hm"><label>SIM TIME</label><span id="m-time">—</span></div>
-    <div class="hm"><label>AVAILABILITY</label><span id="m-avail" class="big">—</span></div>
-    <div class="hm"><label>IN SERVICE</label><span id="m-healthy">—</span></div>
-    <div class="hm"><label>ACTIVE ALARMS</label><span id="m-faults" class="warn">—</span></div>
-    <div class="hm"><label>PWR ALARMS</label><span id="m-pwr" class="warn">—</span></div>
-    <div class="hm"><label>CREWS OUT</label><span id="m-teams">—</span></div>
-    <div class="hm"><label>MTTR</label><span id="m-mttr">—</span></div>
-  </div>
-  <div class="hdr-ctl">
-    <button id="btn-pause" class="ctl">❚❚</button>
-    <button class="ctl spd" data-speed="1">1×</button>
-    <button class="ctl spd" data-speed="2">2×</button>
-    <button class="ctl spd" data-speed="5">5×</button>
-    <button id="btn-cut" class="ctl danger" title="Trigger a double fiber cut (Act 3)">✂ CUT FIBER</button>
-    <div id="conn" class="conn live"><i></i><span>LIVE</span></div>
-  </div>
-</header>
-<main>
-  <aside id="rail-l">
-    <section class="panel">
-      <h3>Alarm Status <span class="h3-note">ITU-T X.733</span></h3>
-      <div id="status-bars"></div>
-    </section>
-    <section class="panel grow">
-      <h3>Aggregation Sites <span class="h3-note">site power A/B/C</span></h3>
-      <div id="agg-list"></div>
-    </section>
-    <section class="panel">
-      <h3>Field Crews</h3>
-      <div id="team-list"></div>
-    </section>
+<div id="shell">
+
+  <!-- ======================= sidebar ======================= -->
+  <aside id="side">
+    <div id="brand"><div class="lg">AN</div>
+      <div><b>AutoNOC</b><small>NON-RT RIC OPERATIONS</small></div></div>
+    <div class="grp">MONITOR</div>
+    <div class="nav on"><span class="ic">◉</span>Overview</div>
+    <div class="nav" data-cmd="map"><span class="ic">🗺</span>Live Map</div>
+    <div class="nav" data-cmd="power"><span class="ic">⚡</span>Power &amp; Fuel</div>
+    <div class="nav" data-cmd="crews"><span class="ic">🚚</span>Crews</div>
+    <div class="grp">ANALYZE</div>
+    <div class="nav" data-cmd="ai"><span class="ic">✦</span>AI rApps</div>
+    <div class="nav" data-cmd="counter"><span class="ic">⚖</span>Counterfactual</div>
+    <div class="grp">MANAGE</div>
+    <div class="nav" data-cmd="policy"><span class="ic">⚙</span>Policies</div>
+    <div class="nav" data-cmd="feed"><span class="ic">🔔</span>Alerts<span class="bdg" id="navbdg">0</span></div>
+    <div id="syscard"><div class="sh">🛡</div>
+      <div><b id="sys-t">Engine nominal</b><small id="sys-s">2.36 ms/tick · deterministic</small></div></div>
   </aside>
-  <div id="map-wrap">
-    <div id="map"></div>
-    <div id="legend"></div>
+
+  <!-- ======================= main ======================= -->
+  <div id="main">
+    <header id="head">
+      <div><h1>Sulaymaniyah Network Overview</h1>
+        <div class="sub">300 LTE sites · O-RAN Non-RT RIC · ITU-T X.733 alarm model</div></div>
+      <span id="clock" class="mono">—</span>
+      <span id="conn" class="conn live"><i></i><span>LIVE</span></span>
+      <div class="spacer"></div>
+      <button class="hbtn wide" id="btn-pause" title="pause / resume the simulation">❚❚</button>
+      <div id="speeds">
+        <button class="spd on" data-speed="1">1×</button>
+        <button class="spd" data-speed="2">2×</button>
+        <button class="spd" data-speed="4">4×</button>
+      </div>
+      <button class="hbtn wide danger" id="btn-cut" title="Act 3: double cut isolates a ring">✂ CUT</button>
+      <button class="hbtn wide go" id="btn-ai" title="toggle the Commander">✦ AI</button>
+      <div id="search">⌕&nbsp; Search sites, alarms, rApps… <kbd>⌘K</kbd></div>
+      <button class="hbtn" id="bell">🔔<span class="dot" id="belldot">0</span></button>
+    </header>
+
+    <!-- KPI row -->
+    <div id="kpis">
+      <div class="card kpi enter">
+        <div class="top"><span class="ic g">♥</span><span class="lb">NETWORK HEALTH</span>
+          <span class="head-dot" style="background:var(--green)"></span></div>
+        <div class="num" id="n-avail" style="color:var(--green2)">—</div>
+        <div class="dlt dim" id="d-avail">SLA 98.0%</div>
+        <svg viewBox="0 0 100 30" preserveAspectRatio="none"><path class="spark" id="s-avail" stroke="var(--green)"/></svg>
+      </div>
+      <div class="card kpi enter">
+        <div class="top"><span class="ic b">✦</span><span class="lb">AI PRECISION</span>
+          <span class="head-dot" style="background:var(--blue)"></span></div>
+        <div class="num" id="n-prec" style="color:var(--blue)">—</div>
+        <div class="dlt dim" id="d-prec">break-even p* —</div>
+        <svg viewBox="0 0 100 30" preserveAspectRatio="none"><path class="spark" id="s-prec" stroke="var(--blue)"/></svg>
+      </div>
+      <div class="card kpi enter">
+        <div class="top"><span class="ic r">⚠</span><span class="lb">X.733 ALARMS</span>
+          <span class="head-dot" style="background:var(--red)"></span></div>
+        <div class="num" id="n-alarms" style="color:var(--red)">0</div>
+        <div class="dlt dim" id="d-alarms">critical 0</div>
+        <svg viewBox="0 0 100 30" preserveAspectRatio="none"><path class="spark" id="s-alarms" stroke="var(--red)"/></svg>
+      </div>
+      <div class="card kpi enter">
+        <div class="top"><span class="ic c">◉</span><span class="lb">PRE-EMPTED</span>
+          <span class="head-dot" style="background:var(--cyan)"></span></div>
+        <div class="num" id="n-pre" style="color:var(--cyan)">0</div>
+        <div class="dlt dim" id="d-pre">PdM rApp lead ≈ 45 min</div>
+        <svg viewBox="0 0 100 30" preserveAspectRatio="none"><path class="spark" id="s-pre" stroke="var(--cyan)"/></svg>
+      </div>
+      <div class="card kpi enter">
+        <div class="top"><span class="ic a">⚡</span><span class="lb">POWER ALARMS</span>
+          <span class="head-dot" style="background:var(--amber)"></span></div>
+        <div class="num" id="n-pwr" style="color:var(--amber)">0</div>
+        <div class="dlt dim" id="d-pwr">ATS 0 · theft 0</div>
+        <svg viewBox="0 0 100 30" preserveAspectRatio="none"><path class="spark" id="s-pwr" stroke="var(--amber)"/></svg>
+      </div>
+      <div class="card kpi enter">
+        <div class="top"><span class="ic v">▣</span><span class="lb">SITES ONLINE</span>
+          <span class="head-dot" style="background:var(--violet)"></span></div>
+        <div class="num" id="n-sites" style="color:var(--violet)">—</div>
+        <div class="dlt dim" id="d-sites">—</div>
+        <svg viewBox="0 0 100 30" preserveAspectRatio="none"><path class="spark" id="s-sites" stroke="var(--violet)"/></svg>
+      </div>
+    </div>
+
+    <!-- map + FM feed -->
+    <div id="mid">
+      <div class="card enter" id="mapcard">
+        <div class="ct">CITY NETWORK MAP — SULAYMANIYAH
+          <span class="va" id="map-hint">click a node for the inspector</span></div>
+        <div id="map"><div id="mapfade"></div>
+          <div id="legend">
+            <b>SITE STATUS</b>
+            <div class="li"><span class="sw" style="background:var(--green)"></span>In Service</div>
+            <div class="li"><span class="sw" style="background:var(--amber)"></span>PdM warning</div>
+            <div class="li"><span class="sw" style="background:var(--red)"></span>X.733 alarm</div>
+            <b>FIBER FLOW</b>
+            <div class="li"><span class="ln"></span>light in conduit</div>
+            <div class="li"><span class="ln c"></span>cut — frozen</div>
+          </div>
+        </div>
+      </div>
+      <div class="card enter" id="alertcard">
+        <div class="ct">ACTIVE ALARMS — FM FEED<span class="va" id="feed-count">0 events</span></div>
+        <div id="feed"></div>
+      </div>
+    </div>
+
+    <!-- analytics row -->
+    <div id="bot">
+      <div class="card enter">
+        <div class="ct">USER THROUGHPUT (QCI 9)<span class="va mono" id="t-now">—</span></div>
+        <div id="traffic"><svg preserveAspectRatio="none" viewBox="0 0 100 40">
+          <defs>
+            <linearGradient id="gA" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#4d8dff" stop-opacity=".34"/>
+              <stop offset="1" stop-color="#4d8dff" stop-opacity="0"/></linearGradient>
+            <linearGradient id="gB" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#ff8c3c" stop-opacity=".28"/>
+              <stop offset="1" stop-color="#ff8c3c" stop-opacity="0"/></linearGradient>
+          </defs>
+          <path id="t-areaA" fill="url(#gA)"/><path id="t-lineA" fill="none" stroke="#6ea8ff" stroke-width="1.4"/>
+          <path id="t-areaB" fill="url(#gB)"/><path id="t-lineB" fill="none" stroke="#ffb08c" stroke-width="1.2"/>
+        </svg>
+        <div class="chart-leg"><span><i style="background:#6ea8ff"></i>in-service sites</span>
+          <span><i style="background:#ffb08c"></i>degraded sites</span></div>
+      </div>
+      <div class="card enter">
+        <div class="ct">DISTRICT HEALTH<span class="va">site-power type</span></div>
+        <div id="districts"></div>
+      </div>
+      <div class="card enter">
+        <div class="ct">SITE-POWER RISK</div>
+        <div id="gwrap"><svg viewBox="0 0 172 96">
+          <path d="M14 88 A72 72 0 0 1 158 88" fill="none" stroke="#141d2b" stroke-width="11" stroke-linecap="round"/>
+          <path id="garc" d="M14 88 A72 72 0 0 1 158 88" fill="none" stroke="var(--green)" stroke-width="11"
+            stroke-linecap="round" stroke-dasharray="226.2" stroke-dashoffset="226.2" style="transition:stroke .8s"/>
+        </svg>
+        <div id="grisk-lb"><b id="g-val" style="color:var(--green)">0</b><small>COMPOSITE RISK</small></div></div>
+        <div id="gstats">
+          <span><b id="g-ats">0</b>ATS fails</span><span><b id="g-theft">0</b>fuel thefts</span>
+          <span><b id="g-alt">0</b>off-grid now</span>
+        </div>
+      </div>
+      <div class="card enter">
+        <div class="ct">SITE STATUS MIX</div>
+        <div id="donutwrap">
+          <svg viewBox="0 0 42 42">
+            <circle cx="21" cy="21" r="15.9" fill="none" stroke="#141d2b" stroke-width="5.4"/>
+            <circle id="dn0" cx="21" cy="21" r="15.9" fill="none" stroke="var(--green)"  stroke-width="5.4" stroke-dasharray="0 100" transform="rotate(-90 21 21)"/>
+            <circle id="dn1" cx="21" cy="21" r="15.9" fill="none" stroke="var(--amber)"  stroke-width="5.4" stroke-dasharray="0 100" transform="rotate(-90 21 21)"/>
+            <circle id="dn2" cx="21" cy="21" r="15.9" fill="none" stroke="var(--red)"    stroke-width="5.4" stroke-dasharray="0 100" transform="rotate(-90 21 21)"/>
+            <circle id="dn3" cx="21" cy="21" r="15.9" fill="none" stroke="var(--violet)" stroke-width="5.4" stroke-dasharray="0 100" transform="rotate(-90 21 21)"/>
+            <text x="21" y="20.6" text-anchor="middle" fill="var(--txt)" font-size="7.6" font-weight="800" id="dn-c">0</text>
+            <text x="21" y="26.4" text-anchor="middle" fill="var(--faint)" font-size="3.4" letter-spacing=".6">ONLINE</text>
+          </svg>
+          <div id="dleg">
+            <div class="li"><span class="sw" style="background:var(--green)"></span>In service<span class="vv" id="dl0">0</span></div>
+            <div class="li"><span class="sw" style="background:var(--amber)"></span>PdM warn<span class="vv" id="dl1">0</span></div>
+            <div class="li"><span class="sw" style="background:var(--red)"></span>Alarm<span class="vv" id="dl2">0</span></div>
+            <div class="li"><span class="sw" style="background:var(--violet)"></span>Backhaul<span class="vv" id="dl3">0</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
-  <aside id="rail-r">
-    <section class="panel" id="incident-panel" style="display:none">
-      <h3>Active Incidents</h3>
-      <div id="incidents"></div>
-    </section>
-    <section class="panel" id="ai-panel">
-      <h3>Non-RT RIC <span class="h3-note">AI rApps · A1 policy</span></h3>
-      <div id="ai-body">Loading…</div>
-    </section>
-    <section class="panel grow">
-      <h3>Node Inspector <span class="h3-note">3GPP PM counters</span></h3>
-      <div id="inspector" class="empty">Select a node on the map</div>
-    </section>
-    <section class="panel logs">
-      <h3>FM Event Log <span class="h3-note">X.733 severity</span></h3>
-      <div id="log"></div>
-    </section>
-  </aside>
-</main>
-<script src="/static/leaflet.js"></script>
-<script src="/static/app.js?v=7"></script>
+</div>
+
+<!-- ======================= slide-over drawer ======================= -->
+<div id="scrim"></div>
+<aside id="drawer">
+  <div id="dtabs">
+    <button class="dtab on" data-tab="ins">INSPECTOR</button>
+    <button class="dtab" data-tab="ai">rApp PANEL</button>
+    <button class="dtab x" id="dclose">✕</button>
+  </div>
+  <div id="d-ins" class="dpane"><div class="empty">Select a node on the map</div></div>
+  <div id="d-ai" class="dpane hidden"></div>
+</aside>
+
+<!-- ======================= command palette ======================= -->
+<div id="palscr"><div id="pal">
+  <div id="palin">⌕<input id="palq" placeholder="Type a command…" autocomplete="off"/></div>
+  <div id="palrows"></div>
+  <div id="palfoot"><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> run</span><span><kbd>esc</kbd> close</span></div>
+</div></div>
+
+<div id="booterr" class="hidden"></div>
+
+<script src="/static/leaflet.js?v=8"></script>
+<script src="/static/app.js?v=8"></script>
 </body>
 </html>

@@ -866,45 +866,44 @@ assets: `no-cache`.
 model validates the engine's output. (This is the layer that caught the
 early build's 118 °C / +8.5 dB S11 / 1194 ms latency drift at the boundary.)
 
-### 23. The dashboard
+### 23. The dashboard (v3 — operations console)
 
-Single page, vanilla JS + Leaflet (bundled offline, `leaflet.js`/`leaflet.css`
-in `web/`). It **renders, never computes** (I6): every name, colour,
-threshold, gauge spec and alarm label arrives from `/api/config`.
+Single page, vanilla JS + Leaflet (bundled offline), rebuilt in the v2.1
+cleanup pass as a **NEXUS-style operations console** around the motion
+engine specified in `docs/DESIGN_VISION.md`. It still **renders, never
+computes** (I6): every name, colour, threshold and gauge band arrives from
+`/api/config`.
 
-**Visual language (v2.1 "dark command center"):** CartoDB Dark Matter
-basemap, glassmorphic panels (`rgba(13,20,36,.75)` + 12 px backdrop blur +
-`0 8px 32px rgba(0,0,0,.37)` shadow), neon node markers with a soft canvas
-halo (healthy `#00ff88`-family colours from the config; faults radar-ripple
-red via CSS keyframes), amber **sonar pings on nodes the PdM rApp has flagged
-`warn`** (still in service, p ≥ break-even — the prediction shown *before*
-the failure), fiber rings as SVG polylines whose `stroke-dashoffset`
-animates like data flowing to the core (cut ⇒ red, frozen, rippling), crew
-vehicles that **glide** with a CSS transition whose duration tracks the sim
-speed, and KPI numbers that **tween like an odometer** (rAF, ease-out-cubic,
-~450 ms) instead of snapping.
+Layout: grouped sidebar (Monitor / Analyze / Manage + system card), header
+(sim clock, LIVE chip, pause, speed pills, CUT, AI, ⌘K search, alarm bell),
+six KPI cards **each with a live sliding sparkline**, middle row = city map
+(Dark Matter tiles, neon nodes, radar ripples on X.733 alarms, amber PdM
+sonars, fiber light-tubes with particles, cut markers) beside the **FM feed**
+(FLIP-animated, severity-chipped), bottom row = QCI-9 throughput area chart
+(in-service vs degraded), district health bars with site-power chips, the
+site-power risk arc gauge, and the status-mix donut. A right **slide-over
+drawer** carries the inspector (config-driven mini gauges, tags, inject
+buttons) and the rApp panel (mode, roles, precision vs break-even, pending
+tier-2 actions with approve/veto).
 
-Layout: map centre (node markers, agg sites, fiber rings with cut points,
-crew vehicles, storm overlays), left rail (district health list with
-**PWR A/B/C chips** per site-power type, team list), right rail (inspector
-with **mini colour-coded gauges** for every radio/hardware/power metric —
-fill % and warn/bad bands driven by the served `GAUGE_SPECS` — plus PdM-warn
-/ ATS tags and X.733-labelled inject buttons; incident panel), bottom (status
-bars — availability / healthy / faults / **PWR alarms (ATS + fuel thefts)** /
-active teams / MTTR / sim time — and the FM event log colour-coded by X.733
-severity), and the **AI panel** headed by the O-RAN rApp roles (RCA rApp /
-PdM rApp / A1 policy): live pre-empted / false-dispatch / precision /
-break-even / crew-hours-saved, pending tier-2 actions with approve/veto
-buttons and auto-approve countdowns, and the mode indicator (`ml` vs `rules`
-vs `off`). Controls: pause/resume, speed, **CUT FIBER**, ENABLE AI.
+**Motion system (why it is smooth):** one master `requestAnimationFrame`
+clock; polls only move spring *targets* (delta-time integrators, so nothing
+snaps between polls); sparklines/charts are time-parameterised sliding
+windows that scroll every frame; the feed reorders with FLIP; hot paths
+write transforms/attributes/text only (bars use `scaleX`, numbers use
+tabular-nums); dt is clamped and the loop idles while the tab is hidden.
+CSS keyframes remain for decoration only (ripples, glow, dash-flow), and the
+crew glide is a CSS transition whose duration tracks the poll cadence.
 
-Polling: `/api/data` once on load, then a `setTimeout` chain on
-`/api/delta?since=<last tick>` at `clamp(1000/speed, 300, 2000)` ms — the
-client genuinely tracks the sim speed (1× ≈ 1 poll/s, 4× ≈ 4 polls/s), and
-the vehicle-glide transition duration is set from the same cadence so motion
-stays smooth at every speed. Delta payloads include a node whenever its
-derived `warn` verdict flips (server-side `_warn_sent` cursor), so sonar
-pings appear/disappear without waiting for a full resync.
+Polling: `/api/data` once, then a `setTimeout` chain on
+`/api/delta?since=<tick>` at `clamp(1000/speed, 300, 2000)` ms; the vehicle
+glide duration is set from the same cadence. Delta rows include nodes whose
+derived `warn` verdict flipped (server-side `_warn_sent` cursor).
+
+The standalone design mockups used to agree this direction (cinematic v1,
+motion-engine v2, fake data) live outside the repository in
+`design-preview/` — reference material, not shipped code. Phase 2 (React +
+Framer Motion + deck.gl componentisation) is recorded in DESIGN_VISION.md.
 
 ---
 
@@ -1059,11 +1058,11 @@ relative paths — work from any clone).
    `TRUE_PREVALENCE = 0.022` (from review #2), while the committed Doctor
    test-set measure is 1.32% prevalence. The constant is documentation-grade
    (the pipeline re-weights from the data itself).
-7. **`hist_coarse` is collected but unused.** The 24 h coarse history (the
-   branch that makes dust visible, SNR 6.93 vs 0.08) is maintained on every
-   node by `snapshot()`, but no current feature set, model, or script reads
-   it. The config comment ("the 92% slow-fault recall target depends
-   entirely on this") describes intent, not the current model.
+7. ~~**`hist_coarse` is collected but unused.**~~ **RESOLVED (v2.1 cleanup):**
+   the dead coarse branch (field, hourly roll-up block, `_hour_buffer`,
+   `HISTORY_COARSE`) was excised from `models.py`/`config.py`; `snapshot()`
+   now only appends to `hist_fine`. If an Oracle v2 ever needs 24 h
+   aggregates, re-add deliberately — the removed block is in git history.
 8. **Packaging.** No `pyproject.toml` yet (roadmap) — the project is
    run-in-place from the repo root, not pip-installed.
 9. **Python version.** Target is 3.12+ (badge, Dockerfile 3.12.14). The code

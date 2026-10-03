@@ -1,165 +1,92 @@
-/* AutoNOC frontend.
- *
- * Three v1 failures are fixed structurally here:
- *
- *  1. CLICK TARGETS. v1 used 4 px markers = 64 px^2, nine times below the
- *     WCAG 24x24 minimum. Here each node has a 6 px visible dot plus an
- *     invisible 14 px interactive pad = 784 px^2, twelve times larger, with
- *     no visual change.
- *
- *  2. NEON GLOW. v1 put everything on L.canvas(), which draws pixels rather
- *     than DOM, so CSS drop-shadow could never apply. The glow was not
- *     missing, it was architecturally impossible. Here healthy nodes stay on
- *     canvas (fast, ~270 of them) while faulty nodes are promoted to DOM
- *     markers that can carry the glow.
- *
- *  3. MARKER CHURN. v1 destroyed and recreated markers on every status
- *     change, which also killed open popups and hover state. Here markers
- *     are created once and mutated with setStyle().
- *
- * The frontend renders. It never computes. Colours, thresholds and region
- * metadata all come from GET /api/config.
- */
+/* =====================================================================
+   AutoNOC v3 frontend — renders, never computes (I6).
+   Every name / colour / threshold / gauge band arrives from /api/config.
+
+   MOTION SYSTEM (docs/DESIGN_VISION.md):
+     • one master requestAnimationFrame clock; polls only move TARGETS
+     • every rendered quantity is a delta-time spring scalar (the same
+       integrator Framer Motion uses) => no snapping between polls
+     • sparklines / area charts are time-parameterised sliding windows:
+       samples carry birth-times, the line scrolls every frame
+     • FM feed reorders with FLIP (measure once, animate transforms)
+     • hot paths write transforms / attributes / text only
+   ===================================================================== */
 'use strict';
 
-let CFG = null;
-let map, canvas;
-let lastTick = 0, failures = 0, selected = null;
-let mapOk = false;              // false if the map library failed to load
-let simSpeed = 1.0;             // tracked from the speed buttons + /api/health
-let pollTimer = null;
+/* ------------------------------------------------------------ globals */
+let CFG = null, map = null, mapOk = false, canvas = null, svgRen = null;
+let selected = null, lastTick = 0, failures = 0, paused = false;
+let simSpeed = 1, pollTimer = null, cutCycle = 0;
 
-/* On-screen error logger: any JavaScript error is appended to the Event Log
- * panel so it is VISIBLE on the page and can be pasted back for debugging.
- * Without this, a silent JS crash looks exactly like "nothing is changing". */
-function onScreenError(msg) {
-  try {
-    const box = document.getElementById('log');
-    if (box) {
-      const div = document.createElement('div');
-      div.className = 'ln CRITICAL';
-      div.innerHTML = `<span class="t">JS!</span><span class="m">${String(msg).slice(0, 250)}</span>`;
-      box.appendChild(div);
-      while (box.children.length > 120) box.removeChild(box.firstChild);
-    }
-  } catch (_) { /* never let the logger itself crash */ }
-  console.error('AutoNOC JS:', msg);
+const nodeState = new Map();          // id -> latest node payload
+const dots = new Map(), halos = new Map(), pads = new Map();
+const rips = new Map();               // id -> radar/sonar DOM marker
+const vehs = new Map(), ringLines = new Map(), particles = [];
+const districtRows = new Map();       // agg id -> row DOM refs
+
+/* ------------------------------------------------------------ motion */
+function Spring(v, k = 120, c = 17) { return { v, t: v, vel: 0, k, c }; }
+function stepSpring(s, dt) {
+  s.vel += (-s.k * (s.v - s.t) - s.c * s.vel) * dt;
+  s.v += s.vel * dt;
 }
-window.addEventListener('error', e => onScreenError(e.message || 'unknown JS error'));
-window.addEventListener('unhandledrejection', e => onScreenError('async: ' + (e.reason || 'unknown')));
-
-const dots = new Map();     // id -> visible canvas marker
-const halos = new Map();    // id -> soft neon halo under the dot (canvas glow)
-const pads = new Map();     // id -> invisible click target
-const doms = new Map();     // id -> DOM marker (faulty only)
-const warns = new Map();    // id -> DOM sonar marker (predictive rApp warn)
-const vehs = new Map();     // team id -> marker
-const ringLines = new Map();
-const cutMarks = new Map();
-const collapseLines = [];
-let knownCuts = new Set();
-const nodeState = new Map();  // id -> last payload
-
-/* ------------------------------------------------------------ cadence */
-/* The server ticks at 1 Hz per unit of sim speed. Polling tracks that rate,
- * and the CSS vehicle-glide duration is kept in sync so trucks interpolate
- * at 60 FPS BETWEEN ticks instead of teleporting — the same client-side
- * interpolation trick FlightRadar24 uses for 10-second transponder pings. */
-function pollInterval() {
-  return Math.min(2000, Math.max(300, Math.round(1000 / simSpeed)));
+/* sliding window: samples keep their birth time so the polyline scrolls
+   continuously; the live head is a spring so new polls never snap */
+function Series(seed, span = 16) {
+  const s = { buf: [], head: Spring(seed), span };
+  for (let i = 40; i > 0; i--)
+    s.buf.push({ t: -i * 0.9, v: seed });
+  return s;
 }
-
-function schedulePoll() {
-  clearTimeout(pollTimer);
-  pollTimer = setTimeout(async () => { await poll(); schedulePoll(); },
-                         pollInterval());
+function pushSample(s, now) {
+  s.buf.push({ t: now, v: s.head.v });
+  if (s.buf.length > 260) s.buf.shift();
 }
-
-function applySpeed(speed) {
-  simSpeed = Math.max(0.25, Number(speed) || 1);
-  document.documentElement.style.setProperty(
-    '--veh-glide', (pollInterval() / 1000).toFixed(2) + 's');
-  schedulePoll();
-}
-
-/* ------------------------------------------------------------ boot */
-async function boot() {
-  try {
-    CFG = await (await fetch('/api/config')).json();
-  } catch (e) { onScreenError('cannot fetch /api/config — is the server running? ' + e); return; }
-  try { initMap(); } catch (e) { onScreenError('map init failed: ' + e); }
-  try { buildLegend(); } catch (e) { onScreenError('legend failed: ' + e); }
-  try {
-    const first = await (await fetch('/api/data')).json();
-    applyFull(first);
-    lastTick = first.tick;
-  } catch (e) { onScreenError('cannot fetch /api/data — ' + e); }
-  applySpeed(simSpeed);        // starts the speed-tracked poll loop
-  try { wireControls(); } catch (e) { onScreenError('controls failed: ' + e); }
-}
-
-function initMap() {
-  if (typeof L === 'undefined') {
-    // Leaflet could not load (CDN blocked / no internet). The dashboard
-    // still works without the map: panels and metrics keep updating.
-    mapOk = false;
-    onScreenError('MAP LIBRARY MISSING — map disabled, panels still update');
-    return;
+function sparkPath(s, now, w, h, lo, hi) {
+  const pts = [];
+  for (const p of s.buf) {
+    const x = w - ((now - p.t) / s.span) * w;
+    if (x < -4) continue;
+    const y = h - 3 - ((p.v - lo) / (hi - lo)) * (h - 6);
+    pts.push(x.toFixed(2) + ' ' + y.toFixed(2));
   }
-  map = L.map('map', {
-    center: CFG.map_center, zoom: CFG.map_zoom,
-    zoomControl: true, preferCanvas: false, attributionControl: false
-  });
-  try {
-    /* CartoDB "Dark Matter": charcoal-black basemap so the neon nodes,
-     * flowing fiber conduits and red alarms glow like a defense-grade
-     * command center instead of a daylight street map. */
-    L.tileLayer(
-      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-      {
-        maxZoom: 19,
-        subdomains: 'abcd',
-        attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-      }
-    ).addTo(map);
-  } catch (e) { onScreenError('basemap tiles failed (need internet): ' + e); }
-  canvas = L.canvas({ padding: 0.5 });
-  mapOk = true;
-
-
-  // EPC cores and depot
-  const p = CFG.epc_primary, b = CFG.epc_backup, d = CFG.depot;
-  markIcon(p.lat, p.lon, '★', 'epc', `${p.name} — Primary EPC (${p.backhaul})`);
-  markIcon(b.lat, b.lon, '◆', 'epc', `${b.name} — Backup EPC (${b.backhaul})`);
-  markIcon(d.lat, d.lon, '🔧', 'depot', 'Maintenance Depot');
-
-  CFG.agg_sites.forEach(s => {
-    L.circle([s.lat, s.lon], {
-      radius: 900, color: s.color, fillColor: s.color,
-      fillOpacity: 0.045, weight: 1, opacity: 0.35, interactive: false,
-      renderer: canvas
-    }).addTo(map);
-  });
-
-  map.on('click', () => { selected = null; renderInspector(); });
+  pts.push(w.toFixed(2) + ' ' +
+    (h - 3 - ((s.head.v - lo) / (hi - lo)) * (h - 6)).toFixed(2));
+  return 'M' + pts.join(' L');
 }
 
-function markIcon(lat, lon, glyph, cls, title) {
-  L.marker([lat, lon], {
-    icon: L.divIcon({ className: '', html: `<div class="${cls}">${glyph}</div>`,
-                      iconSize: [22, 22], iconAnchor: [11, 11] }),
-    title, interactive: false
-  }).addTo(map);
-}
+/* rendered state — targets come from the API, values from the springs */
+const st = {
+  avail: Spring(98), prec: Spring(0), alarms: Spring(0), pre: Spring(0),
+  pwr: Spring(0), sites: Spring(0), risk: Spring(0),
+  thrA: Series(0, 20), thrB: Series(0, 20),
+  sAvail: Series(98), sPrec: Series(0), sAlarms: Series(0),
+  sPre: Series(0), sPwr: Series(0), sSites: Series(0),
+  mix: [Spring(300), Spring(0), Spring(0), Spring(0)],
+  stats: { ats: 0, theft: 0, alt: 0, warn: 0, crit: 0 },
+};
 
-function buildLegend() {
-  document.getElementById('legend').innerHTML =
-    Object.entries(CFG.status_names).map(([k, name]) =>
-      `<div class="lg"><i style="background:${CFG.status_colors[k]}"></i>${name}</div>`
-    ).join('');
+const $ = id => document.getElementById(id);
+const setTxt = (id, txt) => {
+  const e = $(id);
+  if (e && e.__v !== txt) { e.__v = txt; e.textContent = txt; }
+};
+function onScreenError(msg) {
+  const b = $('booterr');
+  b.classList.remove('hidden');
+  b.textContent = '⚠ ' + msg;
 }
 
 /* ------------------------------------------------------------ polling */
+/* client tracks the sim speed: faster sim => faster polls AND a shorter
+   vehicle-glide transition, so motion stays smooth at every cadence */
+function pollInterval() { return Math.max(300, Math.min(2000, 1000 / simSpeed)); }
+function schedulePoll() { pollTimer = setTimeout(async () => { await poll(); schedulePoll(); }, pollInterval()); }
+function applySpeed(v) {
+  simSpeed = v;
+  document.documentElement.style.setProperty('--veh-glide', pollInterval() + 'ms');
+}
+
 async function poll() {
   try {
     const r = await fetch(`/api/delta?since=${lastTick}`, { cache: 'no-store' });
@@ -173,139 +100,202 @@ async function poll() {
     if (++failures >= 2) setConn(false);
   }
 }
-
 function setConn(up) {
-  const el = document.getElementById('conn');
+  const el = $('conn');
   el.className = 'conn ' + (up ? 'live' : 'down');
-  el.querySelector('span').textContent = up ? 'LIVE' : 'RECONNECTING';
+  el.querySelector('span').textContent = up ? 'LIVE' : 'RECONNECT';
 }
 
 function applyFull(d) {
   d.nodes.forEach(n => { nodeState.set(n.id, n); upsertNode(n); });
   drawRings(d.rings);
-  renderIncidents(d.rings, d.nodes);
   d.teams.forEach(upsertTeam);
-  renderKPIs(d.kpis);
-  renderAggs(d.agg);
-  renderTeams(d.teams);
-  document.getElementById('log').innerHTML = '';
-  appendLogs(d.logs);
+  $('feed').innerHTML = '';
+  d.logs.slice(-14).forEach(l => feedItem(l, true));
+  absorb(d);
   renderInspector();
   if (d.ai) renderAI(d.ai);
 }
-
 function applyDelta(d) {
   d.nodes.forEach(n => { nodeState.set(n.id, n); upsertNode(n); });
   d.teams.forEach(upsertTeam);
   drawRings(d.rings);
-  renderIncidents(d.rings, d.nodes);
-  renderKPIs(d.kpis);
-  renderAggs(d.agg);
-  renderTeams(d.teams);
-  appendLogs(d.logs);
+  d.logs.forEach(l => feedItem(l, false));
+  absorb(d);
   if (d.ai) renderAI(d.ai);
   if (selected && d.nodes.some(n => n.id === selected)) renderInspector();
 }
 
-/* ------------------------------------------------------------ nodes */
+/* polls move TARGETS only — the master loop renders them */
+function absorb(d) {
+  const k = d.kpis, ai = d.ai || {};
+  const alarms = (k.congestion || 0) + (k.overheat || 0) + (k.rf || 0)
+               + (k.power || 0) + (k.backhaul || 0);
+  st.avail.t = k.availability;
+  st.sites.t = k.healthy;
+  st.alarms.t = alarms;
+  st.pre.t = ai.pre_empted || 0;
+  st.pwr.t = (k.ats_failures || 0) + (k.fuel_thefts || 0);
+  st.prec.t = ai.precision != null ? ai.precision : st.prec.t;
+  st.stats.ats = k.ats_failures || 0;
+  st.stats.theft = k.fuel_thefts || 0;
+
+  /* display-only aggregates over the node map (rendering, not logic) */
+  let warn = 0, alt = 0, thrOk = 0, thrBad = 0, crit = 0;
+  nodeState.forEach(n => {
+    if (n.warn && n.status === 0) warn++;
+    if (n.power && n.power !== 'Grid') alt++;
+    if (n.status === 4 || n.status === 5) crit++;   // X.733 CRITICAL kinds
+    if (n.status === 0) thrOk += n.throughput || 0;
+    else thrBad += n.throughput || 0;
+  });
+  st.stats.warn = warn; st.stats.alt = alt; st.stats.crit = crit;
+  st.thrA.head.t = thrOk / 1000;
+  st.thrB.head.t = thrBad / 1000;
+  st.mix[0].t = Math.max(0, k.healthy - warn);
+  st.mix[1].t = warn;
+  st.mix[2].t = alarms - (k.backhaul || 0);
+  st.mix[3].t = k.backhaul || 0;
+  st.risk.t = Math.min(100, st.stats.ats * 18 + st.stats.theft * 12
+                        + alt * 1.1 + (k.power || 0) * 6);
+
+  setTxt('clock', k.sim_time);
+  setTxt('d-avail', 'SLA 98.0%');
+  setTxt('d-prec', 'break-even p* ' + (CFG.break_even_precision || 0.4375));
+  setTxt('d-alarms', 'critical ' + st.stats.crit);
+  setTxt('d-pwr', 'ATS ' + st.stats.ats + ' · theft ' + st.stats.theft);
+  setTxt('d-sites', (k.healthy / (CFG.num_nodes || 300) * 100).toFixed(1) + '%');
+  setTxt('d-pre', 'PdM rApp lead ≈ 45 min');
+
+  /* districts */
+  (d.agg || []).forEach(a => {
+    let row = districtRows.get(a.id);
+    if (!row) row = makeDistrictRow(a);
+    row.h.t = a.health;
+    if (row.pc.__v !== a.health + '%') { row.pc.__v = a.health + '%'; row.pc.textContent = a.health + '%'; }
+    const col = a.health >= 98 ? 'var(--green)' : a.health >= 92 ? 'var(--amber)' : 'var(--red)';
+    row.bar.style.background = col;
+    const wx = a.weather && a.weather !== 'Clear'
+      ? a.weather.toUpperCase() + ' ' + a.wind + 'km/h' : 'clear';
+    if (row.wx.__v !== wx) { row.wx.__v = wx; row.wx.textContent = wx; }
+  });
+}
+
+/* ------------------------------------------------------------ FM feed */
+const SEV_ICON = { CRITICAL: '✖', MAJOR: '⚠', MINOR: '△', WARNING: '◆', INFO: 'ℹ', CLEARED: '✔' };
+function feedItem(l, silent) {
+  const feed = $('feed');
+  const sev = (l.severity in SEV_ICON) ? l.severity : 'INFO';
+  const el = document.createElement('div');
+  el.className = 'al ' + sev;
+  el.innerHTML =
+    `<div class="sic">${SEV_ICON[sev]}</div>` +
+    `<div class="tx"><div class="t1">${l.message}</div>` +
+    `<div class="t2">tick ${l.tick}</div>` +
+    `<span class="sv">${sev}</span></div>` +
+    `<div class="rt mono">${l.time}</div>`;
+  /* FLIP: measure siblings once, then animate the displacement */
+  const before = silent ? [] : [...feed.children].map(c => c.getBoundingClientRect().top);
+  feed.prepend(el);
+  if (!silent) {
+    el.animate([{ opacity: 0, transform: 'translateY(-12px) scale(.97)' },
+                { opacity: 1, transform: 'none' }],
+               { duration: 460, easing: 'cubic-bezier(.2,1.2,.3,1)' });
+    [...feed.children].slice(1).forEach((c, i) => {
+      const dy = (before[i] || 0) - c.getBoundingClientRect().top;
+      if (dy) c.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }],
+                        { duration: 440, easing: 'cubic-bezier(.2,1.1,.3,1)' });
+    });
+  }
+  while (feed.children.length > 26) feed.lastChild.remove();
+  setTxt('feed-count', feed.children.length + ' events');
+}
+
+/* ------------------------------------------------------------ districts */
+function makeDistrictRow(a) {
+  const el = document.createElement('div');
+  el.className = 'drow';
+  el.innerHTML =
+    `<span class="nm">${a.name}</span>` +
+    `<span class="pwr ${a.pwr || 'A'}" title="${(CFG.power_configs || {})[a.pwr] || ''}">${a.pwr || 'A'}</span>` +
+    `<span class="wx"></span>` +
+    `<span class="bar"><i></i></span><span class="pc">—</span>`;
+  $('districts').appendChild(el);
+  const row = { h: Spring(a.health), bar: el.querySelector('.bar i'),
+                pc: el.querySelector('.pc'), wx: el.querySelector('.wx') };
+  districtRows.set(a.id, row);
+  return row;
+}
+
+/* ------------------------------------------------------------ map */
+function initMap() {
+  try {
+    map = L.map('map', { zoomControl: false, preferCanvas: true })
+          .setView([35.5613, 45.4309], 12.6);
+    canvas = L.canvas({ padding: .4 });
+    svgRen = L.svg({ padding: .4 });
+    /* CartoDB Dark Matter: charcoal basemap so the neon layer reads */
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19, subdomains: 'abcd',
+      attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+    }).on('load', () => { $('mapfade').style.opacity = 0; }).addTo(map);
+    setTimeout(() => { $('mapfade').style.opacity = 0; }, 2600);
+    map.on('click', () => closeDrawer());
+    mapOk = true;
+  } catch (e) { onScreenError('map init failed: ' + e); }
+}
+
 function upsertNode(n) {
+  if (!mapOk) return;
   const colour = CFG.status_colors[n.status];
   const healthy = n.status === 0;
-  if (!mapOk) return;      // no map: skip markers, panels still update
 
   let dot = dots.get(n.id);
   if (!dot) {
-    // soft neon halo UNDER the dot — canvas cannot carry a CSS drop-shadow,
-    // so the glow is a second, larger translucent circle in the same colour
-    const halo = L.circleMarker([n.lat, n.lon], {
+    halos.set(n.id, L.circleMarker([n.lat, n.lon], {
       renderer: canvas, radius: 11, fillColor: colour, color: null,
-      weight: 0, fillOpacity: .13, interactive: false
-    }).addTo(map);
-    halos.set(n.id, halo);
-
-    // visible marker: small, on canvas, non-interactive so clicks fall
-    // through to the pad underneath
+      weight: 0, fillOpacity: .13, interactive: false }).addTo(map));
     dot = L.circleMarker([n.lat, n.lon], {
-      renderer: canvas, radius: 6, fillColor: colour, color: '#fff',
-      weight: 1.4, opacity: .85, fillOpacity: .95, interactive: false
-    }).addTo(map);
+      renderer: canvas, radius: 5.5, fillColor: colour, color: '#fff',
+      weight: 1.2, opacity: .8, fillOpacity: .95, interactive: false }).addTo(map);
     dots.set(n.id, dot);
-
-    // invisible 14 px hit pad -> 28x28 px = 784 px^2 click target
     const pad = L.circleMarker([n.lat, n.lon], {
       renderer: canvas, radius: 14, opacity: 0, fillOpacity: 0,
-      interactive: true, bubblingMouseEvents: false
-    }).addTo(map);
+      interactive: true, bubblingMouseEvents: false }).addTo(map);
     pad.on('click', ev => {
       L.DomEvent.stopPropagation(ev);
-      selected = pickNearest(ev.latlng);   // nearest centre, not topmost
+      selected = pickNearest(ev.latlng);
+      openDrawer('ins');
       renderInspector();
     });
     pad.bindTooltip(() => tipFor(n.id), { direction: 'top', offset: [0, -8] });
     pads.set(n.id, pad);
-    dot._st = -1;
+    dot._st = -1; dot._warn = null;
   }
 
   if (dot._st !== n.status) {
-    dot.setStyle({ fillColor: colour, radius: healthy ? 6 : 9 });
+    dot.setStyle({ fillColor: colour, radius: healthy ? 5.5 : 8 });
     const halo = halos.get(n.id);
     if (halo) halo.setStyle({ fillColor: colour });
     dot._st = n.status;
-    // promote faulty nodes to DOM so they can glow; demote when healed
-    const existing = doms.get(n.id);
-    if (!healthy && !existing) {
-      const crit = (n.status === 3 || n.status === 4);
-      const m = L.marker([n.lat, n.lon], {
-        icon: L.divIcon({
-          className: '',
-          html: `<div class="fault-dot ${crit ? 'crit-dot' : ''}" style="--c:${colour}"></div>`,
-          iconSize: [15, 15], iconAnchor: [7.5, 7.5]
-        }),
-        interactive: false, zIndexOffset: 400
-      }).addTo(map);
-      doms.set(n.id, m);
-    } else if (healthy && existing) {
-      map.removeLayer(existing);
-      doms.delete(n.id);
-    } else if (!healthy && existing) {
-      const crit = (n.status === 3 || n.status === 4);
-      existing.getElement().querySelector('.fault-dot')
-        .setAttribute('style', `--c:${colour}`);
-      existing.getElement().querySelector('.fault-dot')
-        .className = `fault-dot ${crit ? 'crit-dot' : ''}`;
-    }
   }
 
-  // Predictive sonar (Non-RT RIC): the PdM rApp's verdict for this node is
-  // at/above the served break-even while it is still in service. Amber
-  // radar ripple = "inside the 60-minute failure window" — shown BEFORE
-  // the tower turns red. The flag is computed server-side (I6).
-  const wEl = warns.get(n.id);
-  if (n.warn && healthy) {
-    if (!wEl) {
-      const m = L.marker([n.lat, n.lon], {
-        icon: L.divIcon({ className: '', html: '<div class="warn-dot"></div>',
-                          iconSize: [13, 13], iconAnchor: [6.5, 6.5] }),
-        interactive: false, zIndexOffset: 350
-      }).addTo(map);
-      warns.set(n.id, m);
+  /* radar ripple (fault) / sonar ping (PdM warn) — DOM markers, few at a time */
+  const key = !healthy ? 'fault' : (n.warn ? 'warn' : null);
+  if (dot._warn !== key) {
+    const old = rips.get(n.id);
+    if (old) { map.removeLayer(old); rips.delete(n.id); }
+    if (key) {
+      rips.set(n.id, L.marker([n.lat, n.lon], {
+        icon: L.divIcon({ className: '', iconSize: [12, 12], iconAnchor: [6, 6],
+          html: `<div class="tw ${key}" style="--c:${colour}"><i></i></div>` }),
+        interactive: false, zIndexOffset: key === 'fault' ? 400 : 350 }).addTo(map));
     }
-  } else if (wEl) {
-    map.removeLayer(wEl);
-    warns.delete(n.id);
+    dot._warn = key;
+  } else if (key) {
+    const el = rips.get(n.id) && rips.get(n.id).getElement();
+    if (el) el.firstChild.style.setProperty('--c', colour);
   }
-}
-
-/* Hit pads are 28 px wide but nodes average 25 px apart at zoom 12, so pads
- * overlap in dense districts. Leaflet resolves overlap by z-order, which
- * feels arbitrary; pick the nearest centre instead. */
-function pickNearest(latlng) {
-  let best = null, bestD = Infinity;
-  for (const [id, n] of nodeState) {
-    const d = (n.lat - latlng.lat) ** 2 + (n.lon - latlng.lng) ** 2;
-    if (d < bestD) { bestD = d; best = id; }
-  }
-  return best;
 }
 
 function tipFor(id) {
@@ -314,239 +304,102 @@ function tipFor(id) {
   return `<b>${n.id}</b><br>${CFG.status_names[n.status]}<br>`
        + `RSRP ${n.rsrp} dBm · VSWR ${n.vswr} · PRB ${n.prb}% · ${n.temp}°C`;
 }
+function pickNearest(latlng) {
+  let best = null, bd = 1e9;
+  nodeState.forEach(n => {
+    const d = (n.lat - latlng.lat) ** 2 + (n.lon - latlng.lng) ** 2;
+    if (d < bd) { bd = d; best = n.id; }
+  });
+  return best;
+}
 
-/* ------------------------------------------------------------ rings */
+/* fiber rings: SVG light-tubes + particles riding the drawn path */
 function drawRings(rings) {
   if (!rings || !mapOk) return;
   rings.forEach(r => {
     let line = ringLines.get(r.id);
     const cut = !!r.cut;
     if (!line) {
-      // SVG, NOT canvas: CSS animates stroke-dashoffset, so the ring reads
-      // as a living conduit of light flowing toward the core EPC. On a cut
-      // the flow stops dead and the path turns bright red (.fiber-cut).
-      line = L.polyline(r.path, { className: 'fiber-line', interactive: false }).addTo(map);
+      line = L.polyline(r.path, { renderer: svgRen, className: 'fiber-line',
+                                  interactive: false }).addTo(map);
       ringLines.set(r.id, line);
-      line._cut = false;
+      line._cut = false; line._parts = false;
     }
     if (line._cut !== cut) {
       const el = line.getElement();
       if (el) el.setAttribute('class', cut ? 'fiber-cut' : 'fiber-line');
       line._cut = cut;
     }
-    const existing = cutMarks.get(r.id);
-    if (cut && !existing) {
-      const m = L.marker([r.cut.lat, r.cut.lon], {
-        icon: L.divIcon({ className: '',
-          html: `<div class="cut-marker"></div>`,
-          iconSize: [20, 20], iconAnchor: [10, 10] }),
-        interactive: false, zIndexOffset: 1000
-      }).addTo(map);
-      m.bindTooltip(`FIBER CUT · ${r.cut.seg} · ${r.cut.cause}`,
-                    { direction: 'top' });
-      cutMarks.set(r.id, m);
-      // Animate the alarms collapsing onto their shared cause.
-      // Without this beat the viewer sees 34 red dots and reads it as 34
-      // separate failures — precisely the naive interpretation the whole
-      // correlation claim exists to disprove.
-      if (!knownCuts.has(r.id)) {
-        knownCuts.add(r.id);
-        animateCollapse(r);
+    if (!line._parts) {
+      const path = line.getElement();
+      if (path && path.ownerSVGElement) {
+        line._parts = true;
+        for (let k = 0; k < 5; k++) {
+          const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          c.setAttribute('r', 2); c.setAttribute('class', 'particle');
+          path.ownerSVGElement.appendChild(c);
+          particles.push({ ring: r.id, el: c, t: k / 5, sp: .00042 + (k % 3) * .00006 });
+        }
       }
-    } else if (!cut && existing) {
-      map.removeLayer(existing);
-      cutMarks.delete(r.id);
-      knownCuts.delete(r.id);
     }
+    /* cut markers */
+    if (cut && !line._mk) {
+      const mid = r.path[Math.floor(r.path.length / 2)];
+      line._mk = L.marker(mid, { interactive: false, zIndexOffset: 600,
+        icon: L.divIcon({ className: '', iconSize: [12, 12], iconAnchor: [6, 6],
+                          html: '<div class="cutm"></div>' }) }).addTo(map);
+    } else if (!cut && line._mk) { map.removeLayer(line._mk); line._mk = null; }
   });
 }
 
-function animateCollapse(ring) {
-  if (!mapOk) return;
-  const dark = ring.nodes
-    .map(id => nodeState.get(id))
-    .filter(n => n && n.status === 5);
-  if (!dark.length) return;
-  map.flyTo([ring.cut.lat, ring.cut.lon], 13, { duration: 1.1 });
-  dark.forEach((n, i) => {
-    setTimeout(() => {
-      const line = L.polyline(
-        [[n.lat, n.lon], [ring.cut.lat, ring.cut.lon]],
-        { color: CFG.status_colors[3], weight: 1.3, opacity: 0.5,
-          dashArray: '4 6', interactive: false }
-      ).addTo(map);
-      collapseLines.push(line);
-      setTimeout(() => {
-        map.removeLayer(line);
-        const k = collapseLines.indexOf(line);
-        if (k >= 0) collapseLines.splice(k, 1);
-      }, 2200);
-    }, i * 28);
-  });
-}
-
-function renderIncidents(rings, nodes) {
-  const panel = document.getElementById('incident-panel');
-  const box = document.getElementById('incidents');
-  const cuts = (rings || []).filter(r => r.cut);
-  if (!cuts.length) { panel.style.display = 'none'; return; }
-  panel.style.display = '';
-  box.innerHTML = cuts.map(r => {
-    const dark = r.nodes.filter(id => {
-      const n = nodeState.get(id);
-      return n && n.status === 5;
-    }).length;
-    const collapsed = dark > 1
-      ? `${dark} alarms &rarr; 1 incident &middot; ${dark - 1} crews saved`
-      : 'ring unprotected &middot; rerouting';
-    return `<div class="inc" data-lat="${r.cut.lat}" data-lon="${r.cut.lon}">
-      <div class="inc-hd">
-        <span class="inc-kind">FIBER CUT</span>
-        <span class="inc-count">${dark} nodes</span>
-      </div>
-      <div class="inc-why">${r.cut.seg} &middot; ${r.cut.cause} &middot; ring ${r.id}</div>
-      <div class="inc-collapse">${collapsed}</div>
-    </div>`;
-  }).join('');
-  box.querySelectorAll('.inc').forEach(el => {
-    el.onclick = () => {
-      if (!mapOk) return;
-      map.flyTo(
-        [parseFloat(el.dataset.lat), parseFloat(el.dataset.lon)], 14,
-        { duration: 0.8 });
-    };
-  });
-}
-
-/* ------------------------------------------------------------ teams */
+/* crews: Leaflet translates the wrapper; CSS transition glides it */
 function upsertTeam(t) {
   if (!mapOk) return;
   let m = vehs.get(t.id);
-  const st = t.state || 'IDLE';
-  const cls = st === 'REPAIRING' ? 'veh repairing'
-            : st === 'STANDBY' ? 'veh standby'
-            : 'veh';
+  const stt = t.state || 'IDLE';
+  const cls = stt === 'REPAIRING' ? 'veh repairing'
+            : stt === 'STANDBY' ? 'veh standby' : 'veh';
   if (!m) {
     m = L.marker([t.lat, t.lon], {
-      // className on the WRAPPER is what Leaflet actually moves — the CSS
-      // transition on .veh-wrap is what makes cars glide instead of jump
       icon: L.divIcon({ className: 'veh-wrap',
                         html: `<div class="${cls}"><i></i><i></i></div>`,
-                        iconSize: [22, 14], iconAnchor: [11, 10] }),
-      zIndexOffset: 900, interactive: false
-    }).addTo(map);
+                        iconSize: [20, 12], iconAnchor: [10, 8] }),
+      zIndexOffset: 900, interactive: false }).addTo(map);
     vehs.set(t.id, m);
     m._cls = cls;
   }
-  m.setLatLng([t.lat, t.lon]);          // .veh-wrap transition glides it
+  m.setLatLng([t.lat, t.lon]);
   if (m._cls !== cls) {
     const el = m.getElement();
-    if (el) {
-      const inner = el.querySelector('.veh');
-      if (inner) { inner.className = cls; m._cls = cls; }
-    }
+    if (el) el.firstChild.className = cls;
+    m._cls = cls;
   }
-  const el = m.getElement();
-  if (el) el.style.opacity = t.available ? '0.35' : '1';
 }
 
-/* ------------------------------------------------------------ panels */
-/* Smooth rolling odometer numbers (CountUp-style): KPIs tween over ~450 ms
- * with an ease-out curve instead of snapping between ticks — the Stripe /
- * modern-telecom-console feel. State per element id, driven by rAF at 60 FPS. */
-const _rollState = new Map();
-function rollNum(id, target, decimals, suffix) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  const from = _rollState.has(id) ? _rollState.get(id) : target;
-  _rollState.set(id, target);
-  const fmt = v => v.toFixed(decimals) + suffix;
-  if (from === target) { el.textContent = fmt(target); return; }
-  const t0 = performance.now(), dur = 450;
-  const ease = x => 1 - Math.pow(1 - x, 3);
-  function frame(now) {
-    const p = Math.min(1, (now - t0) / dur);
-    el.textContent = fmt(p === 1 ? target : from + (target - from) * ease(p));
-    if (p < 1 && _rollState.get(id) === target) requestAnimationFrame(frame);
-  }
-  requestAnimationFrame(frame);
+/* ------------------------------------------------------------ drawer */
+function openDrawer(tab) {
+  $('drawer').classList.add('on');
+  $('scrim').classList.add('on');
+  switchTab(tab || 'ins');
+}
+function closeDrawer() {
+  $('drawer').classList.remove('on');
+  $('scrim').classList.remove('on');
+}
+function switchTab(tab) {
+  document.querySelectorAll('.dtab[data-tab]').forEach(b =>
+    b.classList.toggle('on', b.dataset.tab === tab));
+  $('d-ins').classList.toggle('hidden', tab !== 'ins');
+  $('d-ai').classList.toggle('hidden', tab !== 'ai');
 }
 
-function renderKPIs(k) {
-  setTxt('m-time', k.sim_time);
-  rollNum('m-avail', k.availability, 1, '%');
-  rollNum('m-healthy', k.healthy, 0, '/' + CFG.num_nodes);
-  rollNum('m-faults', k.congestion + k.overheat + k.rf + k.power + k.backhaul, 0, '');
-  // site-power facility alarms (OPEX story): ATS failures to crank + fuel thefts
-  rollNum('m-pwr', (k.ats_failures || 0) + (k.fuel_thefts || 0), 0, '');
-  rollNum('m-teams', k.active_teams, 0, '/' + CFG.num_teams);
-  if (k.mttr_min) rollNum('m-mttr', k.mttr_min, 0, 'm');
-  else setTxt('m-mttr', '—');
-  const av = document.getElementById('m-avail');
-  av.style.color = k.availability >= 98 ? 'var(--green)'
-                 : k.availability >= 95 ? 'var(--amber)' : 'var(--red)';
-  const rows = [[0, k.healthy], [1, k.congestion], [2, k.overheat],
-                [3, k.rf], [4, k.power], [5, k.backhaul]];
-  document.getElementById('status-bars').innerHTML = rows.map(([s, c]) =>
-    `<div class="sbar">
-       <div class="dot" style="background:${CFG.status_colors[s]}"></div>
-       <div class="nm">${CFG.status_names[s]}</div>
-       <div class="ct" style="color:${c ? CFG.status_colors[s] : 'var(--faint)'}">${c}</div>
-     </div>`).join('');
-}
-
-function renderAggs(aggs) {
-  if (!aggs) return;
-  document.getElementById('agg-list').innerHTML = aggs.map(a => {
-    const col = a.health >= 98 ? 'var(--green)'
-              : a.health >= 92 ? 'var(--amber)' : 'var(--red)';
-    const wx = a.weather === 'Clear' ? '' :
-      `<span class="agg-w">${a.weather.toUpperCase()} ${a.wind}km/h</span>`;
-    // site-power architecture chip: A grid+standby DG, B hybrid DG+battery
-    // bank, C off-grid solar PV — the OPEX story per district, served by
-    // /api/config (power_configs) and the agg payload (pwr)
-    const pwrName = (CFG.power_configs || {})[a.pwr] || '';
-    const pwr = a.pwr
-      ? `<span class="pwr-chip ${a.pwr}" title="${pwrName}">PWR ${a.pwr}</span>`
-      : '';
-    return `<div class="agg">
-      <div class="agg-top">
-        <span class="agg-nm" style="color:${a.color}">${a.name}</span>
-        ${pwr}${wx}<span class="ct" style="color:${col}">${a.health}%</span>
-      </div>
-      <div class="agg-track">
-        <div class="agg-fill" style="width:${a.health}%;background:${col}"></div>
-      </div></div>`;
-  }).join('');
-}
-
-function renderTeams(teams) {
-  if (!teams) return;
-  const col = { IDLE: 'var(--faint)', EN_ROUTE: 'var(--cyan)',
-                STANDBY: 'var(--amber)', REPAIRING: 'var(--orange)',
-                RETURNING: 'var(--dim)' };
-  const lbl = { IDLE: 'READY', EN_ROUTE: 'EN ROUTE', STANDBY: 'HOLDING',
-                REPAIRING: 'REPAIRING', RETURNING: 'RETURNING' };
-  document.getElementById('team-list').innerHTML = teams.map(t =>
-    `<div class="team">
-       <div class="tdot" style="background:${col[t.state]}"></div>
-       <div class="tnm">${t.name}</div>
-       <div class="tsk">${t.skill}</div>
-       <div class="tst" style="color:${col[t.state]}">
-         ${lbl[t.state] || t.state.replace('_', ' ')}
-         ${t.eta ? ' ' + t.eta + 't' : ''}
-       </div>
-     </div>`).join('');
-}
-
-/* Gauge row: label + mini colour-coded bar + value. Fill % and colour class
- * come from the gauge specs SERVED by /api/config (GAUGE_SPECS) — the
- * frontend applies the spec, it never invents thresholds (I5). */
+/* gauge rows: specs + labels served by /api/config (I5) */
 function gaugeCls(g, v) {
   if (g.lower_bad) return v < g.bad ? 'bad' : v < g.warn ? 'warn' : 'ok';
   return v > g.bad ? 'bad' : v > g.warn ? 'warn' : 'ok';
 }
-
+const mrow = (k, v, c = '') =>
+  `<div class="mrow"><span class="k">${k}</span><span class="v ${c}">${v}</span></div>`;
 function grow(key, v, vText) {
   const lab = (CFG.metric_labels || {})[key] || key.toUpperCase();
   const g = (CFG.gauges || {})[key];
@@ -559,10 +412,9 @@ function grow(key, v, vText) {
 }
 
 function renderInspector() {
-  const box = document.getElementById('inspector');
+  const box = $('d-ins');
   if (!selected || !nodeState.has(selected)) {
-    box.className = 'empty';
-    box.innerHTML = 'Select a node on the map';
+    box.innerHTML = '<div class="empty">Select a node on the map</div>';
     return;
   }
   const n = nodeState.get(selected);
@@ -570,7 +422,6 @@ function renderInspector() {
   const gen = ['Legacy', 'Standard', 'Modernised'][n.gen];
   const agg = CFG.agg_sites[n.agg];
   const pwrName = (CFG.power_configs || {})[n.pwr] || '';
-  box.className = '';
   box.innerHTML = `
     <div class="ins-hd">
       <span class="ins-id">${n.id}</span>
@@ -578,7 +429,7 @@ function renderInspector() {
         ${CFG.status_names[n.status].toUpperCase()}</span>
     </div>
     <div class="ins-tags">
-      <span class="tag">${agg.name}</span>
+      <span class="tag">${agg ? agg.name : n.agg}</span>
       <span class="tag">${gen}</span>
       <span class="tag">Ring ${n.ring}</span>
       <span class="tag pwr" title="${pwrName}">PWR TYPE ${n.pwr}</span>
@@ -627,169 +478,289 @@ function renderInspector() {
   });
 }
 
-const mrow = (k, v, c = '') =>
-  `<div class="mrow"><span class="k">${k}</span><span class="v ${c}">${v}</span></div>`;
-
-/* Set a header/panel text node only when the value actually changed.
- * Called by renderKPIs; without this the dashboard died on first paint
- * with "setTxt is not defined" and every panel stayed empty. */
-function setTxt(id, v) {
-  const el = document.getElementById(id);
-  if (el && el.textContent !== String(v)) el.textContent = v;
-}
-
-function appendLogs(logs) {
-  if (!logs || !logs.length) return;
-  const box = document.getElementById('log');
-  const seen = box._last || 0;
-  logs.filter(l => l.tick > seen).forEach(l => {
-    const div = document.createElement('div');
-    div.className = 'ln ' + l.severity;
-    div.innerHTML = `<span class="t">${l.time}</span><span class="m">${l.message}</span>`;
-    box.appendChild(div);
-  });
-  box._last = logs[logs.length - 1].tick;
-  while (box.children.length > 120) box.removeChild(box.firstChild);
-  box.scrollTop = box.scrollHeight;
-}
-
-/* ------------------------------------------------------------ Commander (M6) */
 function renderAI(ai) {
   if (!ai) return;
-  const box = document.getElementById('ai-panel');
-  if (!box) return;
+  const box = $('d-ai');
   const be = CFG.break_even_precision || 0.4375;
-  const prec = ai.false_dispatches + ai.pre_empted > 0
-    ? ai.pre_empted / (ai.pre_empted + ai.false_dispatches) * 100 : null;
-  const modeCls = ai.ai_mode === 'rules' ? 'rules'
-                : ai.ai_enabled ? '' : 'off';
+  const modeCls = ai.ai_mode === 'rules' ? 'rules' : ai.ai_enabled ? '' : 'off';
   const modeTxt = ai.ai_mode === 'rules' ? 'RULES MODE'
                 : ai.ai_enabled ? 'AI ON' : 'AI OFF';
-  // O-RAN framing served by /api/config (rapp_roles): name what each model
-  // IS in Non-RT RIC language — RCA rApp, PdM rApp, A1 policy engine.
   const roles = CFG.rapp_roles || {};
-  const roleLines = ['doctor', 'oracle', 'commander']
-    .filter(k => roles[k])
+  const roleLines = ['doctor', 'oracle', 'commander'].filter(k => roles[k])
     .map(k => `<span>▸ ${roles[k]}</span>`).join('');
-  box.innerHTML = `
+  const html = `
     <div class="ins-hd">
-      <span style="font-size:9.5px;letter-spacing:1.3px;color:var(--dim);font-weight:700">
+      <span style="font-size:9px;letter-spacing:.16em;color:var(--faint);font-weight:800">
         rApp PERFORMANCE</span>
       <span class="ai-mode ${modeCls}">${modeTxt}</span>
     </div>
     ${roleLines ? `<div class="rapp-roles">${roleLines}</div>` : ''}
-    <div class="pending-cta" style="margin-bottom:8px">
+    <div class="pending-cta">
       <button class="pbtn approve" id="ai-toggle">
         ${ai.ai_enabled ? 'DISABLE AI' : 'ENABLE AI'}</button>
       <button class="pbtn" id="ai-auto">AUTO-APPROVE 10s</button>
     </div>
     <div class="ai-grid">
-      <span class="ai-k">PRE-EMPTED (24h)</span><span class="ai-v cyan">${ai.pre_empted}</span>
-      <span class="ai-k">FALSE DISPATCHES</span>
-      <span class="ai-v ${ai.false_dispatches ? 'bad' : 'ok'}">${ai.false_dispatches}</span>
-      <span class="ai-k">PRECISION</span>
-      <span class="ai-v ${prec === null ? '' : prec >= be * 100 ? 'ok' : 'bad'}">
-        ${prec === null ? '—' : prec.toFixed(1) + '%'}</span>
-      <span class="ai-k">BREAK-EVEN</span><span class="ai-v warn">${(be * 100).toFixed(1)}%</span>
-      <span class="ai-k">CREW-HOURS SAVED</span><span class="ai-v">${ai.crew_hours_saved.toFixed(1)}</span>
-      <span class="ai-k">UNPREDICTABLE</span><span class="ai-v warn">${ai.unpredictable_pct}%</span>
+      <span class="cell">PRE-EMPTED<b class="cyan">${ai.pre_empted}</b></span>
+      <span class="cell">FALSE DISPATCH<b class="red">${ai.false_dispatches}</b></span>
+      <span class="cell">PRECISION<b class="green">
+        ${ai.precision == null ? '—' : (ai.precision * 100).toFixed(1) + '%'}</b></span>
+      <span class="cell">BREAK-EVEN<b class="blue">${be}</b></span>
+      <span class="cell">CREW-H SAVED<b class="green">${(ai.crew_hours_saved || 0).toFixed(1)}</b></span>
+      <span class="cell">UNPREDICTABLE<b>${(ai.unpredictable_pct || 0).toFixed(0)}%</b></span>
     </div>
-    <div id="pending-list" style="margin-top:8px"></div>`;
-  const t = document.getElementById('ai-toggle');
-  if (t) t.onclick = async () => {
+    <div class="ins-sec"><h4>PENDING TIER-2 ACTIONS</h4>
+      ${(ai.pending || []).map(p => `
+        <div class="pend">
+          <div class="pt">${p.node_id} — ${p.label || 'pre-dispatch crew'}</div>
+          <div class="ps">p=${(p.probability || 0).toFixed(2)} · tier ${p.tier} · `
+            + `ETA ${p.eta != null ? p.eta + 't' : '—'}</div>
+          <div class="row">
+            <button class="pbtn approve" data-ap="${p.action_id}">APPROVE</button>
+            <button class="pbtn" data-ve="${p.action_id}">VETO</button>
+          </div>
+        </div>`).join('') ||
+        '<div class="empty" style="padding-top:8px">queue empty</div>'}
+    </div>`;
+  /* polls arrive ~1/s: only touch the DOM when the panel actually changed,
+     so hover/press states never flicker */
+  if (box.__h !== html) { box.__h = html; box.innerHTML = html; }
+  $('ai-toggle').onclick = async () => {
     await fetch(`/api/control/ai?enabled=${ai.ai_enabled ? 'false' : 'true'}`,
                 { method: 'POST' });
   };
-  const a = document.getElementById('ai-auto');
-  if (a) a.onclick = async () => {
+  $('ai-auto').onclick = async () => {
     await fetch('/api/control/ai?enabled=true&auto_approve_seconds=10',
                 { method: 'POST' });
-    a.textContent = 'AUTO-APPROVE: 10s ON';
-    a.classList.add('approve');
   };
-  renderPending(ai.pending);
-}
-
-function renderPending(pending) {
-  const box = document.getElementById('pending-list');
-  if (!box) return;
-  if (!pending || !pending.length) { box.innerHTML = ''; return; }
-  box.innerHTML = pending.map(a => `
-    <div class="pending" data-id="${a.action_id}">
-      <div class="inc-hd">
-        <span class="inc-kind">${a.tier === 2 ? 'CREW PRE-DISPATCH' : 'AUTO'}</span>
-        <span class="inc-count">${(a.probability * 100).toFixed(0)}%</span>
-      </div>
-      <div class="inc-why">${a.node} · ${a.label} · ${a.eta}s left</div>
-      ${a.tier === 2 ? `
-      <div class="pending-cta">
-        <button class="pbtn approve">APPROVE</button>
-        <button class="pbtn veto">VETO</button>
-      </div>` : ''}
-    </div>`).join('');
-  box.querySelectorAll('.pbtn.approve').forEach(b => {
-    b.onclick = async () => {
-      const id = b.closest('.pending').dataset.id;
-      await fetch(`/api/control/approve/${id}`, { method: 'POST' });
-      b.closest('.pending').remove();
-    };
+  box.querySelectorAll('[data-ap]').forEach(b => b.onclick = async () => {
+    await fetch(`/api/control/approve/${b.dataset.ap}`, { method: 'POST' });
   });
-  box.querySelectorAll('.pbtn.veto').forEach(b => {
-    b.onclick = async () => {
-      const id = b.closest('.pending').dataset.id;
-      await fetch(`/api/control/veto/${id}`, { method: 'POST' });
-      b.closest('.pending').remove();
-    };
+  box.querySelectorAll('[data-ve]').forEach(b => b.onclick = async () => {
+    await fetch(`/api/control/veto/${b.dataset.ve}`, { method: 'POST' });
   });
+  const btn = $('btn-ai');
+  btn.classList.toggle('armed', !!ai.ai_enabled);
 }
 
 /* ------------------------------------------------------------ controls */
 function wireControls() {
-  const pb = document.getElementById('btn-pause');
-  let paused = false;
-  pb.onclick = async () => {
+  $('btn-pause').onclick = async () => {
     paused = !paused;
     await fetch(`/api/control/${paused ? 'pause' : 'resume'}`, { method: 'POST' });
-    pb.textContent = paused ? '▶' : '❚❚';
-    pb.classList.toggle('on', paused);
+    $('btn-pause').textContent = paused ? '▶' : '❚❚';
   };
-
   document.querySelectorAll('.spd').forEach(b => {
     b.onclick = async () => {
       document.querySelectorAll('.spd').forEach(x => x.classList.remove('on'));
       b.classList.add('on');
       await fetch(`/api/control/speed?value=${b.dataset.speed}`, { method: 'POST' });
-      // track the new cadence client-side: faster polls + a shorter vehicle
-      // glide so motion stays smooth at any sim speed
       applySpeed(parseFloat(b.dataset.speed));
     };
   });
-  document.querySelector('.spd').classList.add('on');
-
-  const cb = document.getElementById('btn-cut');
-  let ringIdx = 5;
-  cb.onclick = async () => {
-    cb.disabled = true;
-    cb.textContent = '✂ CUTTING...';
-    try {
-      const r = await fetch(
-        `/api/control/cut-fiber?ring_id=${ringIdx}&isolate=true`,
-        { method: 'POST' });
-      const j = await r.json();
-      ringIdx = (ringIdx + 3) % 10;
-      cb.textContent = j.isolated
-        ? `✂ ${j.nodes_dark} DARK` : '✂ REROUTED';
-    } catch (e) {
-      cb.textContent = '✂ FAILED';
-    }
-    setTimeout(() => { cb.disabled = false; cb.textContent = '✂ CUT FIBER'; },
-               3500);
+  $('btn-cut').onclick = () => doCut();
+  $('btn-ai').onclick = async () => {
+    const on = $('btn-ai').classList.contains('armed');
+    await fetch(`/api/control/ai?enabled=${on ? 'false' : 'true'}`, { method: 'POST' });
   };
-
-  document.addEventListener('keydown', e => {
-    if (e.code === 'Space') { e.preventDefault(); pb.click(); }
-    if (e.code === 'Escape') { selected = null; renderInspector(); }
-  });
+  $('bell').onclick = () => { $('feed').scrollTop = 0; };
+  document.querySelectorAll('.dtab[data-tab]').forEach(b =>
+    b.onclick = () => switchTab(b.dataset.tab));
+  $('dclose').onclick = closeDrawer;
+  $('scrim').onclick = closeDrawer;
+  document.querySelectorAll('#side .nav').forEach(n => n.onclick = () => navCmd(n));
+  wirePalette();
 }
 
+function doCut() {
+  const ring = selected && nodeState.has(selected)
+    ? nodeState.get(selected).ring : (cutCycle % 10);
+  cutCycle++;
+  fetch(`/api/control/cut-fiber?ring_id=${ring}&isolate=true`, { method: 'POST' });
+}
+
+function navCmd(n) {
+  document.querySelectorAll('#side .nav').forEach(x => x.classList.remove('on'));
+  n.classList.add('on');
+  const cmd = n.dataset.cmd;
+  if (cmd === 'ai') openDrawer('ai');
+  else if (cmd === 'feed') $('alertcard').scrollIntoView({ behavior: 'smooth' });
+  else if (cmd === 'map' && mapOk) map.flyTo([35.5613, 45.4309], 12.6, { duration: 1.4 });
+  else if (cmd === 'power' || cmd === 'crews' || cmd === 'counter' || cmd === 'policy')
+    feedItem({ tick: lastTick, time: 'now', severity: 'INFO',
+      message: `“${n.textContent.trim()}” opens in the phase-2 React build` }, false);
+}
+
+/* ------------------------------------------------------------ palette */
+const COMMANDS = [
+  { ic: '✂', t: 'Cut fiber ring (Act 3 demo)', f: doCut },
+  { ic: '✦', t: 'Toggle AI (Commander / A1 policy)', f: () => $('btn-ai').click() },
+  { ic: '⏱', t: 'Arm auto-approve for 10 s', f: () =>
+      fetch('/api/control/ai?enabled=true&auto_approve_seconds=10', { method: 'POST' }) },
+  { ic: '❚❚', t: 'Pause / resume simulation', f: () => $('btn-pause').click() },
+  { ic: '◉', t: 'Fly to weakest district', f: () => {
+      let worst = null;
+      districtRows.forEach((r, id) => {
+        if (!worst || r.h.v < worst.h.v) worst = id;
+      });
+      if (worst == null || !mapOk) return;
+      let lat = 0, lon = 0, n = 0;
+      nodeState.forEach(nd => { if (nd.agg === worst) { lat += nd.lat; lon += nd.lon; n++; } });
+      if (n) map.flyTo([lat / n, lon / n], 13.4, { duration: 1.6 });
+    } },
+  { ic: '⚡', t: 'Speed 4× (demo cadence)', f: () =>
+      document.querySelector('.spd[data-speed="4"]').click() },
+];
+let palSel = 0;
+function wirePalette() {
+  const scr = $('palscr'), rows = $('palrows'), q = $('palq');
+  const open = () => { scr.classList.add('open'); q.value = ''; drawPal(''); q.focus(); };
+  const close = () => scr.classList.remove('open');
+  function drawPal(filter) {
+    const list = COMMANDS.filter(c =>
+      c.t.toLowerCase().includes(filter.toLowerCase()));
+    palSel = Math.min(palSel, Math.max(0, list.length - 1));
+    rows.innerHTML = list.map((c, i) =>
+      `<div class="prow ${i === palSel ? 'sel' : ''}" data-i="${i}">
+         <span class="ic">${c.ic}</span>${c.t}</div>`).join('') ||
+      '<div class="prow">no matching command</div>';
+    rows.querySelectorAll('.prow').forEach(r => r.onclick = () => {
+      const c = list[+r.dataset.i]; close(); c && c.f();
+    });
+    rows._list = list;
+  }
+  $('search').onclick = open;
+  q.oninput = () => drawPal(q.value);
+  q.onkeydown = e => {
+    const list = rows._list || [];
+    if (e.key === 'ArrowDown') { palSel = Math.min(list.length - 1, palSel + 1); drawPal(q.value); }
+    if (e.key === 'ArrowUp') { palSel = Math.max(0, palSel - 1); drawPal(q.value); }
+    if (e.key === 'Enter') { const c = list[palSel]; close(); c && c.f(); }
+  };
+  addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); open(); }
+    if (e.key === 'Escape') { close(); }
+  });
+  scr.onclick = e => { if (e.target === scr) close(); };
+}
+
+/* ------------------------------------------------------------ master loop */
+let LAST = performance.now(), T = 0, sampleAt = 0;
+function loop(nowMs) {
+  const dt = Math.min(.05, Math.max(.001, (nowMs - LAST) / 1000));
+  LAST = nowMs;
+  if (!document.hidden && CFG) {
+    T += dt;
+    /* springs */
+    [st.avail, st.prec, st.alarms, st.pre, st.pwr, st.sites, st.risk,
+     st.thrA.head, st.thrB.head, ...st.mix].forEach(s => stepSpring(s, dt));
+
+    /* sample cadence follows the poll cadence; lines scroll every frame */
+    if (T >= sampleAt) {
+      sampleAt = T + pollInterval() / 1000;
+      st.sAvail.head.t = st.avail.v; st.sPrec.head.t = st.prec.v;
+      st.sAlarms.head.t = st.alarms.v; st.sPre.head.t = st.pre.v;
+      st.sPwr.head.t = st.pwr.v; st.sSites.head.t = st.sites.v;
+      [st.sAvail, st.sPrec, st.sAlarms, st.sPre, st.sPwr, st.sSites,
+       st.thrA, st.thrB].forEach(s => pushSample(s, T));
+    }
+    [st.sAvail, st.sPrec, st.sAlarms, st.sPre, st.sPwr, st.sSites]
+      .forEach(s => stepSpring(s.head, dt));
+
+    /* KPI numbers (tabular-nums: no reflow wobble) */
+    $('n-avail').innerHTML = st.avail.v.toFixed(2) + '<small>%</small>';
+    setTxt('n-prec', st.prec.v > 0.01 ? st.prec.v.toFixed(3) : '—');
+    setTxt('n-alarms', String(Math.max(0, Math.round(st.alarms.v))));
+    setTxt('n-pre', String(Math.max(0, Math.round(st.pre.v))));
+    setTxt('n-pwr', String(Math.max(0, Math.round(st.pwr.v))));
+    $('n-sites').innerHTML = Math.max(0, Math.round(st.sites.v)) +
+      `<small>/${CFG.num_nodes || 300}</small>`;
+    setTxt('belldot', String(Math.max(0, Math.round(st.alarms.v))));
+    setTxt('navbdg', String(Math.max(0, Math.round(st.alarms.v))));
+
+    /* sparklines */
+    $('s-avail').setAttribute('d', sparkPath(st.sAvail, T, 100, 30, 95, 100));
+    $('s-prec').setAttribute('d', sparkPath(st.sPrec, T, 100, 30, .85, 1.001));
+    $('s-alarms').setAttribute('d', sparkPath(st.sAlarms, T, 100, 30, -1,
+      Math.max(12, st.alarms.v * 1.4)));
+    $('s-pre').setAttribute('d', sparkPath(st.sPre, T, 100, 30,
+      Math.min(0, st.pre.v - 8), Math.max(20, st.pre.v * 1.25)));
+    $('s-pwr').setAttribute('d', sparkPath(st.sPwr, T, 100, 30, -.5,
+      Math.max(4, st.pwr.v * 1.5)));
+    $('s-sites').setAttribute('d', sparkPath(st.sSites, T, 100, 30,
+      (CFG.num_nodes || 300) * .92, (CFG.num_nodes || 300) + 2));
+
+    /* throughput area chart (two sliding windows) */
+    const hiA = Math.max(4, ...st.thrA.buf.map(p => p.v), st.thrA.head.v) * 1.25;
+    const hiB = Math.max(1.5, ...st.thrB.buf.map(p => p.v), st.thrB.head.v) * 1.3;
+    const ln = (s, hi) => sparkPath(s, T, 100, 40, 0, hi);
+    const ar = (s, hi) => ln(s, hi) + ' L100 40 L0 40 Z';
+    $('t-lineA').setAttribute('d', ln(st.thrA, hiA));
+    $('t-areaA').setAttribute('d', ar(st.thrA, hiA));
+    $('t-lineB').setAttribute('d', ln(st.thrB, hiB));
+    $('t-areaB').setAttribute('d', ar(st.thrB, hiB));
+    setTxt('t-now', st.thrA.head.v.toFixed(1) + ' Gb/s in service');
+
+    /* district bars: scaleX only (never width) */
+    districtRows.forEach(r => {
+      stepSpring(r.h, dt);
+      r.bar.style.transform = 'scaleX(' + (r.h.v / 100).toFixed(4) + ')';
+    });
+
+    /* power-risk arc */
+    const risk = Math.max(0, Math.min(100, st.risk.v));
+    $('garc').setAttribute('stroke-dashoffset', (226.2 * (1 - risk / 100)).toFixed(1));
+    const col = risk < 40 ? 'var(--green)' : risk < 70 ? 'var(--amber)' : 'var(--red)';
+    $('garc').style.stroke = col;
+    const gv = $('g-val'); gv.textContent = Math.round(risk); gv.style.color = col;
+    setTxt('g-ats', String(st.stats.ats));
+    setTxt('g-theft', String(st.stats.theft));
+    setTxt('g-alt', String(st.stats.alt));
+
+    /* status donut */
+    const tot = st.mix.reduce((a, s) => a + s.v, 0) || 1;
+    let off = 0;
+    st.mix.forEach((s, i) => {
+      const frac = Math.max(0, s.v) / tot * 100;
+      const el = $('dn' + i);
+      el.setAttribute('stroke-dasharray', frac.toFixed(2) + ' ' + (100 - frac).toFixed(2));
+      el.setAttribute('stroke-dashoffset', (-off).toFixed(2));
+      off += frac;
+      setTxt('dl' + i, String(Math.max(0, Math.round(s.v))));
+    });
+    setTxt('dn-c', String(Math.max(0, Math.round(st.mix[0].v + st.mix[1].v))));
+
+    /* fiber particles ride the drawn SVG paths */
+    particles.forEach(p => {
+      const line = ringLines.get(p.ring);
+      const path = line && line.getElement();
+      if (!path || !path.getTotalLength) return;
+      if (!line._cut) p.t = (p.t + p.sp * dt * 1000) % 1;
+      p.el.classList.toggle('halt', line._cut);
+      const pt = path.getPointAtLength(p.t * path.getTotalLength());
+      p.el.setAttribute('cx', pt.x);
+      p.el.setAttribute('cy', pt.y);
+    });
+  }
+  requestAnimationFrame(loop);
+}
+
+/* ------------------------------------------------------------ boot */
+async function boot() {
+  try {
+    CFG = await (await fetch('/api/config')).json();
+  } catch (e) { onScreenError('cannot reach /api/config — is the server up?'); return; }
+  initMap();
+  document.querySelectorAll('.enter').forEach((el, i) =>
+    setTimeout(() => el.classList.add('in'), 100 + i * 45));
+  try {
+    const first = await (await fetch('/api/data')).json();
+    applyFull(first);
+    lastTick = first.tick;
+  } catch (e) { onScreenError('cannot fetch /api/data — ' + e); }
+  applySpeed(1);
+  wireControls();
+  requestAnimationFrame(loop);
+  schedulePoll();
+}
 boot();

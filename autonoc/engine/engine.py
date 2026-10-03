@@ -21,7 +21,7 @@ from . import faults as F
 from . import physics as P
 from .geo import haversine_km, interpolate
 from .noise import NoisePool
-from .models import FiberCut, Incident
+from .models import FiberCut
 from .network import build_network
 
 

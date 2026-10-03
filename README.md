@@ -36,6 +36,7 @@ XGBoost, PyTorch. **Deterministic** — the same seed produces the same world.
 - [API reference](#api-reference)
 - [Testing](#testing)
 - [Project notes (full deep-dive reference)](docs/PROJECT_NOTES.md)
+- [Design vision (UI direction & motion system)](docs/DESIGN_VISION.md)
 - [Results (honest versions)](#results-honest-versions)
 - [Honest limitations](#honest-limitations)
 - [Invariants](#invariants-why-the-architecture-is-the-way-it-is)
@@ -54,7 +55,7 @@ XGBoost, PyTorch. **Deterministic** — the same seed produces the same world.
 | **Commander** — A1 policy engine | Decision-theory layer that acts on predictions (p > 0.4375), tiered autonomy |
 | **Counterfactual study** | Proves the AI is worth it — 4 arms, identical schedules per seed |
 | **Site power model** | Type A/B/C power plants, battery fade, **ATS failure-to-crank** and **fuel-theft** alarms |
-| **API + dashboard** | FastAPI backend pushing a dark, glassmorphic Leaflet command-center dashboard |
+| **API + dashboard** | FastAPI backend pushing a dark operations console (NEXUS-style layout, spring-physics motion engine, live sparklines, X.733 feed) — see [design vision](docs/DESIGN_VISION.md) |
 
 A 300-tower LTE digital twin with real Sulaymaniyah geography, COST-231
 propagation, dual-core fiber/microwave topology, weather-driven exogenous

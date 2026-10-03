@@ -459,7 +459,6 @@ FUEL_THEFT_DROP_PCT: Final = (15.0, 25.0)
 # coverage and from averaging 12 samples per bucket (noise / sqrt(12)).
 # The 92% slow-fault recall target depends entirely on this.
 HISTORY_FINE: Final = 12        # 1 h at full resolution
-HISTORY_COARSE: Final = 24      # 24 h of hourly aggregates
 MAX_LOG_ENTRIES: Final = 500
 MAX_DELTA_LAG: Final = 60
 

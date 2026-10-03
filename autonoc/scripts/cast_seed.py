@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import multiprocessing as mp
 import pathlib
 
@@ -251,8 +250,8 @@ def demo_plan(seed: int, days: int = DEMO_DAYS) -> list[str]:
         lines.append("  Act 4  (no instant fault inside the storm window — "
                      "the AI can still admit it cannot predict the next one)")
     lines.append("  Act 5  counterfactual table: run")
-    lines.append(f"         python -m autonoc.scripts.counterfactual "
-                 f"--seeds 30 --days 10 --workers 8")
+    lines.append("         python -m autonoc.scripts.counterfactual "
+                 "--seeds 30 --days 10 --workers 8")
     return lines
 
 
@@ -346,7 +345,7 @@ def main() -> None:
     REPORTS.mkdir(exist_ok=True)
     (REPORTS / "cast_seed.json").write_text(json.dumps(best, indent=2))
     print(f"\n  best seed -> {best['seed']} (score {best['score']}/15)")
-    print(f"  wrote reports/cast_seed.json\n")
+    print("  wrote reports/cast_seed.json\n")
     for line in demo_plan(best["seed"], args.days):
         print(line)
     print("\n  Next: --verify <seed> with the trained models to confirm the "

@@ -180,7 +180,7 @@ def main() -> None:
     print(f"  window: {SEQ_LEN} contiguous ticks = "
           f"{SEQ_LEN * C.TICK_MINUTES} simulated minutes")
     print(f"  channels: {len(CHANNELS)} raw telemetry, no engine features")
-    print(f"  seeds: train 42, test 99")
+    print("  seeds: train 42, test 99")
     print(f"  natural prevalence after reweighting: {prev:.3%}")
 
     Ftr, Fte = flatten_lags(Xtr), flatten_lags(Xte)
@@ -194,9 +194,9 @@ def main() -> None:
     print("  BASELINES")
     print("-" * 70)
     acc0 = float(((yte == 0) @ wte) / wte.sum())
-    print(f"\n  B0  always predict 'no failure'")
+    print("\n  B0  always predict 'no failure'")
     print(f"      accuracy {acc0:.4f}   recall 0.000")
-    print(f"      Beats every honest model on accuracy. That is the point.")
+    print("      Beats every honest model on accuracy. That is the point.")
     results["B0"] = {"accuracy": acc0, "recall": 0.0}
 
     # ---------------------------------------------------------- B1
