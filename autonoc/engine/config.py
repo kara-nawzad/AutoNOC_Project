@@ -247,13 +247,48 @@ STATUS_RF: Final = 3
 STATUS_POWER: Final = 4
 STATUS_BACKHAUL: Final = 5
 
+# 3GPP / RAN-operator vocabulary. What v2 called "Congestion" a radio engineer
+# reads as high PRB utilisation with CQI collapse; what v2 called "RF/Antenna"
+# is a VSWR alarm in every OSS in the world. The internal STATUS_* ids (and
+# therefore the trained models, feature order and ledger) are UNCHANGED — only
+# the human-facing names move to the language operators actually speak.
 STATUS_NAMES: Final = {
-    0: "Healthy", 1: "Congestion", 2: "Overheat",
-    3: "RF / Antenna", 4: "Power", 5: "Backhaul Isolated",
+    0: "In Service", 1: "PRB Congestion", 2: "Thermal Overheat",
+    3: "VSWR Alarm", 4: "Power Failure", 5: "Backhaul Isolated",
 }
 STATUS_COLORS: Final = {
     0: "#00F5A0", 1: "#00F2FE", 2: "#FF9600",
     3: "#FF2A6D", 4: "#FF6B00", 5: "#6B7280",
+}
+
+# ITU-T X.733 perceived severity — the international alarm standard every
+# telecom FM/OSS speaks (Critical, Major, Minor, Warning, Cleared). The event
+# log emits these classes instead of ad-hoc severities:
+#   Power Failure / Backhaul Isolated -> CRITICAL  (site down / unreachable)
+#   PRB Congestion / Overheat / VSWR  -> MAJOR     (service affecting)
+#   ring protection lost, watchdog    -> MINOR     (degraded, not interrupted)
+#   predictive rApp verdicts          -> WARNING   (not yet a fault)
+#   heal / pre-emption / restore      -> CLEARED
+X733_SEVERITY: Final = {
+    STATUS_CONGESTION: "MAJOR",
+    STATUS_OVERHEAT: "MAJOR",
+    STATUS_RF: "MAJOR",
+    STATUS_POWER: "CRITICAL",
+    STATUS_BACKHAUL: "CRITICAL",
+}
+X733_CLASSES: Final = ("CRITICAL", "MAJOR", "MINOR", "WARNING", "CLEARED")
+
+# Metric labels served to the frontend (I5 — the web layer hard-codes none of
+# these). 3GPP naming: operators measure E-RAB drops, not "packet loss", and
+# user-plane throughput is a QCI-9 (best effort) bearer metric.
+METRIC_LABELS: Final = {
+    "rsrp": "RSRP", "sinr": "SINR", "s11": "Return Loss (S11)",
+    "vswr": "VSWR", "cqi": "CQI", "prb": "PRB Utilisation",
+    "latency": "Latency", "jitter": "Jitter",
+    "loss": "E-RAB Drop Rate", "throughput": "User Thr (QCI 9)",
+    "temp": "Site Temp", "cpu": "CPU Load", "dust": "Dust / Soiling",
+    "power": "Power Source", "voltage": "Bus Voltage",
+    "battery": "Battery Bank", "fuel": "DG Fuel",
 }
 
 # per-node fault mix (backhaul is an independent process, see below)
@@ -329,6 +364,95 @@ THRESH_TEMP: Final = 72.0
 THRESH_PACKET_LOSS: Final = 15.0
 THRESH_CPU: Final = 90.0
 
+# ---------------------------------------------------------------- 3GPP KPIs
+# Derived 3GPP readouts — DISPLAY KPIs computed from existing engine state.
+# They add no dynamics: the 71-feature vector and the trained models are
+# untouched, so determinism (I3) and the committed artifacts stay valid.
+#
+# VSWR is an exact identity of return loss: |Gamma| = 10^(S11/20),
+# VSWR = (1+|Gamma|)/(1-|Gamma|). S11 -22 dB -> 1.17 (healthy),
+# the classic field alarm threshold 1.5 -> S11 -14 dB, THRESH_S11 (-10 dB)
+# -> 1.93 (cable/antenna damage territory).
+VSWR_ALARM_THRESHOLD: Final = 1.5
+VSWR_GAUGE_MAX: Final = 3.0
+# CQI 0..15 reported from SINR — linear approximation of the TS 36.213
+# Table 7.2.3-1 mapping (CQI 15 ~= 64QAM 5/6 at SINR >= 20 dB, CQI 1 at
+# ~ -5 dB). Congestion/RF faults collapse SINR, and CQI collapses with it.
+CQI_SINR_FLOOR: Final = -5.0
+CQI_SINR_CEIL: Final = 20.0
+# PRB utilisation: the offered-load share of the cell's physical resource
+# blocks. A cell whose PRB counter is pinned >= 85% while latency and E-RAB
+# drops climb IS congested — the display saturates accordingly, matching what
+# a real PM counter reads during a congestion alarm.
+PRB_CONGESTION_FLOOR: Final = 85.0
+
+# Gauge specs for the inspector's mini bars (I5: served by /api/config, the
+# frontend hard-codes no thresholds). good/warn/bad are the colour breakpoints;
+# lo..hi is the normalisation window; "lower_bad" flips the direction.
+GAUGE_SPECS: Final = {
+    "rsrp":        {"lo": -130.0, "hi": -50.0, "good": -80.0, "warn": THRESH_RSRP, "bad": -115.0, "lower_bad": True},
+    "sinr":        {"lo": -5.0, "hi": 35.0, "good": 20.0, "warn": 10.0, "bad": 5.0, "lower_bad": True},
+    "vswr":        {"lo": 1.0, "hi": VSWR_GAUGE_MAX, "good": 1.3, "warn": VSWR_ALARM_THRESHOLD, "bad": 2.0, "lower_bad": False},
+    "cqi":         {"lo": 0.0, "hi": 15.0, "good": 13.0, "warn": 8.0, "bad": 4.0, "lower_bad": True},
+    "prb":         {"lo": 0.0, "hi": 100.0, "good": 60.0, "warn": PRB_CONGESTION_FLOOR, "bad": 95.0, "lower_bad": False},
+    "throughput":  {"lo": 0.0, "hi": 300.0, "good": 150.0, "warn": 60.0, "bad": 20.0, "lower_bad": True},
+    "loss":        {"lo": 0.0, "hi": 100.0, "good": 1.0, "warn": 5.0, "bad": THRESH_PACKET_LOSS, "lower_bad": False},
+    "latency":     {"lo": 5.0, "hi": 500.0, "good": 30.0, "warn": 50.0, "bad": 90.0, "lower_bad": False},
+    "jitter":      {"lo": 0.0, "hi": 50.0, "good": 3.0, "warn": 5.0, "bad": 8.0, "lower_bad": False},
+    "temp":        {"lo": 5.0, "hi": 95.0, "good": 45.0, "warn": 62.0, "bad": THRESH_TEMP, "lower_bad": False},
+    "cpu":         {"lo": 0.0, "hi": 100.0, "good": 60.0, "warn": 75.0, "bad": THRESH_CPU, "lower_bad": False},
+    "dust":        {"lo": 0.0, "hi": 1.0, "good": 0.15, "warn": 0.35, "bad": 0.6, "lower_bad": False},
+    "voltage":     {"lo": 10.5, "hi": 13.0, "good": 12.3, "warn": 11.8, "bad": 11.2, "lower_bad": True},
+    "battery":     {"lo": 0.0, "hi": 100.0, "good": 80.0, "warn": 50.0, "bad": 20.0, "lower_bad": True},
+    "fuel":        {"lo": 0.0, "hi": 100.0, "good": 70.0, "warn": 40.0, "bad": 20.0, "lower_bad": True},
+    "s11":         {"lo": -30.0, "hi": -1.0, "good": -20.0, "warn": -14.0, "bad": THRESH_S11, "lower_bad": False},
+}
+
+# ---------------------------------------------------------------- site power
+# Telecom site power architecture. In Iraq, site power is the #1 OPEX line:
+# diesel, battery banks and grid instability cost operators more than the
+# radio gear itself. Every district's grid tier maps to one of the three
+# standard configurations operators deploy — this is a LABEL derived from the
+# existing (unchanged) power physics, not a new dynamic:
+#   Type A  Grid + standby diesel generator (DG). Urban sites on a reliable
+#           mains; the DG only cranks during outages. (Salim St, University…)
+#   Type B  Hybrid DG + deep-cycle VRLA battery bank. Bad-grid areas: the
+#           plant cycles between battery and DG to save fuel — the battery-
+#           first discharge chain below GEN_START_BATTERY_PCT IS that
+#           cycling. (Bakrajo — UNSTABLE mains.)
+#   Type C  Off-grid Solar PV + LFP bank + DG backup. Remote/exposed sites
+#           where the mains snaps in storms and solar carries daylight load.
+#           (Goizha ridge — EXPOSED.)
+POWER_CONFIG_BY_TIER: Final = {
+    "STRONGEST": "A", "STRONG": "A", "MEDIUM": "A",
+    "UNSTABLE": "B", "EXPOSED": "C",
+}
+POWER_CONFIG_NAMES: Final = {
+    "A": "Grid + Standby DG",
+    "B": "Hybrid DG + VRLA Bank",
+    "C": "Off-Grid Solar PV + LFP + DG",
+}
+
+# ATS (Automatic Transfer Switch) FAILURE TO CRANK — every telecom engineer's
+# nightmare: the mains dropped, the battery bank is exhausted down to the
+# generator start level, and the DG does not crank. Modelled as a per-tick
+# chance WHILE a crank attempt is actually happening (grid down, battery at
+# the generator-start threshold, fuel in the tank). While jammed the plant
+# stays on battery and drains toward a site-down POWER failure; each tick it
+# retries until the ATS recovers or the mains returns.
+ATS_CRANK_FAIL_CHANCE: Final = 0.04
+ATS_RECOVER_CHANCE: Final = 0.20
+
+# FUEL THEFT / ABNORMAL FUEL DROP — the classic Middle-East OPEX leak: the
+# tank loses 15-25% of its fuel in one telemetry interval while the DG is
+# OFF (consumption cannot explain it). Rare per node, very visible in the
+# FM log, and exactly what a real fuel-management system alarms on.
+FUEL_THEFT_CHANCE: Final = 0.00002      # per node per tick (~1.7 events/day
+                                        # across 300 sites — demo-legible,
+                                        # OPEX-realistic in shape)
+FUEL_THEFT_MIN_FUEL_PCT: Final = 20.0   # thieves leave the tank low, not empty
+FUEL_THEFT_DROP_PCT: Final = (15.0, 25.0)
+
 # ---------------------------------------------------------------- history
 # Two branches. The fine branch alone cannot see dust: measured SNR 0.08 over
 # a 12-tick window. The coarse branch gives SNR 6.93, both from longer
@@ -363,6 +487,17 @@ EMBARGO_TICKS: Final = HISTORY_FINE + 12   # input window + max horizon
 # The decision rule is NOT a hard-coded threshold. It is derived every time
 # from the cost model (see engine/commander.py), so a sensitivity analysis on
 # the costs (M7) is a one-line change and the break-even moves with it.
+#
+# O-RAN framing (served to the dashboard by /api/config): the AI layer maps
+# onto the O-RAN Non-RT RIC architecture — the Doctor is a Root-Cause-
+# Analysis rApp over 3GPP PM/FM counters, the Oracle is a Predictive-
+# Maintenance rApp over time-series telemetry, and the Commander is the A1
+# policy enforcement engine automating closed-loop RAN intent.
+RAPP_ROLES: Final = {
+    "doctor": "RCA rApp — 3GPP PM/FM correlation",
+    "oracle": "Predictive Maintenance rApp — time-series telemetry",
+    "commander": "A1 Policy Enforcement — closed-loop RAN intent",
+}
 
 # How often (in ticks) the inference worker runs a fresh batch over all nodes.
 # 6 ticks = 30 simulated minutes of movement between model refreshes.

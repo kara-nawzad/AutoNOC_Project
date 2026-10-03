@@ -1,10 +1,16 @@
-/* AutoNOC — dark NOC theme.
-   Colours come from GET /api/config, never hard-coded here. */
+/* AutoNOC — dark command-center theme ("defense-grade NOC").
+   Status colours/names/thresholds come from GET /api/config, never
+   hard-coded here (I5); what lives here is pure presentation chrome:
+   frosted glass, neon glow, sonar ripples, flowing fiber and gauges. */
 :root{
-  --bg:#080B12; --panel:rgba(18,23,35,.72); --line:rgba(120,160,220,.13);
+  --bg:#080B12; --panel:rgba(13,20,36,.75); --line:rgba(255,255,255,.08);
   --txt:#E4ECF7; --dim:#7D8CA6; --faint:#4B5568;
   --cyan:#00F2FE; --green:#00F5A0; --amber:#FF9600; --red:#FF2A6D;
   --orange:#FF6B00; --grey:#6B7280; --violet:#7F00FF;
+  --glass-shadow:0 8px 32px 0 rgba(0,0,0,.37);
+  /* vehicle glide duration — kept in sync with the poll cadence by app.js
+     so trucks interpolate at 60 FPS between 1 Hz server ticks */
+  --veh-glide:.9s;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{
@@ -18,8 +24,11 @@ body{
 #hdr{
   display:flex; align-items:center; gap:26px;
   padding:0 20px; height:62px; flex-shrink:0;
-  background:linear-gradient(180deg,rgba(20,26,40,.96),rgba(12,16,26,.96));
+  background:linear-gradient(180deg,rgba(13,20,36,.88),rgba(10,14,24,.88));
+  backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
   border-bottom:1px solid var(--line);
+  box-shadow:var(--glass-shadow);
+  position:relative; z-index:5;
 }
 .logo{
   font-size:21px; font-weight:700; letter-spacing:1.5px;
@@ -58,9 +67,12 @@ body{
 main{flex:1;display:grid;grid-template-columns:288px 1fr 328px;gap:10px;
      padding:10px;min-height:0}
 aside{display:flex;flex-direction:column;gap:10px;min-height:0}
+/* Sleek frosted-glass panels — translucent, blurred, hairline border */
 .panel{
   background:var(--panel); border:1px solid var(--line); border-radius:10px;
-  padding:12px 13px; backdrop-filter:blur(14px);
+  padding:12px 13px;
+  backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+  box-shadow:var(--glass-shadow);
   display:flex; flex-direction:column; min-height:0;
   animation:fade .45s ease both;
 }
@@ -68,6 +80,11 @@ aside{display:flex;flex-direction:column;gap:10px;min-height:0}
 .panel h3{
   font-size:9.5px; letter-spacing:1.3px; color:var(--dim);
   font-weight:700; margin-bottom:10px; flex-shrink:0;
+  display:flex; align-items:baseline; justify-content:space-between; gap:6px;
+}
+.h3-note{
+  font-size:7.5px; letter-spacing:.6px; color:var(--faint);
+  font-weight:600; text-transform:uppercase; white-space:nowrap;
 }
 @keyframes fade{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
 
@@ -88,9 +105,10 @@ aside{display:flex;flex-direction:column;gap:10px;min-height:0}
 /* faulty nodes get DOM markers so CSS glow is possible.
    Canvas cannot carry drop-shadow — that is why v1's neon disappeared. */
 .fault-dot{
+  position:relative;
   width:15px;height:15px;border-radius:50%;
   background:var(--c);
-  box-shadow:0 0 7px var(--c),0 0 16px var(--c);
+  box-shadow:0 0 8px var(--c),0 0 18px var(--c);
   animation:fpulse 1.7s ease-in-out infinite;
 }
 @keyframes fpulse{
@@ -98,12 +116,46 @@ aside{display:flex;flex-direction:column;gap:10px;min-height:0}
   50%{transform:scale(1.34);opacity:.62}
 }
 .crit-dot{animation-duration:1s}
+
+/* Expanding sonar radar ripple around an ACTIVE alarm — the tower does not
+   just change colour, it radiates. Two rings, staggered, so the pulse reads
+   as continuous sonar rather than a blink. */
+.fault-dot::after,.fault-dot::before{
+  content:''; position:absolute; inset:-4px; border-radius:50%;
+  border:2px solid var(--c); pointer-events:none;
+  animation:radarWave 1.8s ease-out infinite;
+}
+.fault-dot::before{animation-delay:.9s}
+@keyframes radarWave{
+  0%{transform:scale(.8);opacity:.9}
+  100%{transform:scale(3.2);opacity:0}
+}
+.crit-dot::after,.crit-dot::before{animation-duration:1.2s}
+.crit-dot::before{animation-delay:.6s}
+
+/* PREDICTIVE warning (Non-RT RIC): the PdM rApp's verdict is at/above
+   break-even but the site is still in service. Amber sonar — the dashboard
+   shows the failure window BEFORE the tower turns red. */
+.warn-dot{
+  position:relative;
+  width:13px;height:13px;border-radius:50%;
+  background:rgba(255,193,77,.35);
+  border:1.5px solid #FFC14D;
+  box-shadow:0 0 8px rgba(255,193,77,.8);
+}
+.warn-dot::after{
+  content:''; position:absolute; inset:-4px; border-radius:50%;
+  border:1.5px solid #FFC14D; pointer-events:none;
+  animation:radarWave 1.6s ease-out infinite;
+}
+
 /* Vehicles: the marker WRAPPER (.veh-wrap) is what Leaflet moves each tick,
    so the transition lives there — that is what makes cars glide instead of
-   teleporting. The .veh box is pure CSS (no emoji/font dependency) so it
-   renders identically on every OS. */
+   teleporting. Duration tracks the poll cadence via --veh-glide (app.js
+   keeps it in sync with sim speed) so motion stays smooth at 60 FPS between
+   1 Hz server ticks — the FlightRadar24 interpolation trick. */
 .veh-wrap{
-  transition:transform .9s linear;
+  transition:transform var(--veh-glide,.9s) linear;
 }
 .veh{
   position:relative; width:18px; height:9px; border-radius:3px;
@@ -184,14 +236,36 @@ aside{display:flex;flex-direction:column;gap:10px;min-height:0}
 .tag{font-size:8.5px;padding:2px 7px;border-radius:9px;
      background:rgba(255,255,255,.06);color:var(--dim);letter-spacing:.4px}
 .tag.crit{background:rgba(255,42,109,.18);color:var(--red)}
+.tag.pwr{background:rgba(127,0,255,.16);color:#B57DFF;border:1px solid rgba(127,0,255,.35)}
+.tag.ats{background:rgba(255,42,109,.22);color:var(--red);font-weight:700;
+         animation:atblink 1s ease-in-out infinite}
+.tag.warn{background:rgba(255,193,77,.16);color:#FFC14D;font-weight:700}
+@keyframes atblink{0%,100%{opacity:1}50%{opacity:.45}}
 .ins-sec{margin-bottom:11px}
 .ins-sec h4{font-size:8.5px;letter-spacing:1.1px;color:var(--dim);
             margin-bottom:6px;font-weight:700}
-.ins-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px 11px}
-.mrow{display:flex;justify-content:space-between;font-size:10.5px}
-.mrow .k{color:var(--dim)}
-.mrow .v{font-family:'JetBrains Mono',monospace;font-weight:500}
+.ins-grid{display:grid;grid-template-columns:1fr;gap:5px 11px}
+.mrow{display:flex;justify-content:space-between;align-items:center;gap:8px;
+      font-size:10.5px}
+.mrow .k{color:var(--dim);flex-shrink:0}
+.mrow .v{font-family:'JetBrains Mono',monospace;font-weight:500;
+         text-align:right;flex-shrink:0;min-width:76px}
 .v.bad{color:var(--red)} .v.warn{color:var(--amber)} .v.ok{color:var(--green)}
+
+/* mini hardware gauges — telemetry reads as a bar, not just a number.
+   Fill width + colour class are set by app.js from the SERVED gauge specs
+   (/api/config -> GAUGE_SPECS); the frontend computes no thresholds (I5). */
+.gauge{
+  flex:1; height:5px; min-width:40px;
+  background:rgba(255,255,255,.07); border-radius:3px; overflow:hidden;
+}
+.gauge>i{
+  display:block; height:100%; border-radius:3px;
+  transition:width .6s ease, background .6s ease;
+}
+.gauge>i.ok{background:var(--green);box-shadow:0 0 5px rgba(0,245,160,.7)}
+.gauge>i.warn{background:var(--amber);box-shadow:0 0 5px rgba(255,150,0,.7)}
+.gauge>i.bad{background:var(--red);box-shadow:0 0 5px rgba(255,42,109,.8)}
 
 /* ---------------------------------------------------------- log */
 .panel.logs{height:212px;flex-shrink:0}
@@ -199,10 +273,14 @@ aside{display:flex;flex-direction:column;gap:10px;min-height:0}
      line-height:1.62}
 .ln{display:flex;gap:6px;padding:1px 0}
 .ln .t{color:var(--faint);flex-shrink:0}
+/* ITU-T X.733 perceived severity colour code */
 .ln.INFO .m{color:var(--cyan)}
-.ln.SUCCESS .m{color:var(--green)}
-.ln.HIGH .m{color:var(--amber)}
-.ln.CRITICAL .m{color:var(--red);font-weight:500}
+.ln.CLEARED .m{color:var(--green)}
+.ln.WARNING .m{color:#FFC14D}
+.ln.MINOR .m{color:#F8B500}
+.ln.MAJOR .m{color:var(--orange);font-weight:500}
+.ln.CRITICAL .m{color:var(--red);font-weight:600}
+.ln.CRITICAL .t{color:var(--red)}
 
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -213,6 +291,32 @@ aside{display:flex;flex-direction:column;gap:10px;min-height:0}
   main{grid-template-columns:250px 1fr 290px}
 }
 
+/* ---------------------------------------------------------- fiber rings */
+/* Living conduits of light: the 10 protected rings are SVG paths whose
+   dashes physically FLOW toward the core (stroke-dashoffset animation).
+   On a cut the flow stops dead, the path turns bright red and solid —
+   the viewer sees the light die in the cable. */
+.fiber-line{
+  stroke:#3B82F6;
+  stroke-width:1.6;
+  stroke-opacity:.55;
+  stroke-dasharray:6 12;
+  filter:drop-shadow(0 0 3px rgba(59,130,246,.8));
+  animation:flowData 1.4s linear infinite;
+}
+@keyframes flowData{
+  from{stroke-dashoffset:18}
+  to{stroke-dashoffset:0}
+}
+.fiber-cut{
+  stroke:#FF2A6D;
+  stroke-width:2.4;
+  stroke-opacity:.95;
+  stroke-dasharray:none;
+  filter:drop-shadow(0 0 5px rgba(255,42,109,.9));
+  animation:none;              /* the flow STOPS — the cable is dark */
+}
+
 /* ---------------------------------------------------------- Act 3 */
 .ctl.danger{border-color:rgba(255,42,109,.45);color:var(--red);font-weight:600}
 .ctl.danger:hover{background:rgba(255,42,109,.16);border-color:var(--red)}
@@ -221,6 +325,7 @@ aside{display:flex;flex-direction:column;gap:10px;min-height:0}
    Without this the viewer sees chaos - exactly the naive reading
    we are claiming to beat. */
 .cut-marker{
+  position:relative;
   width:20px;height:20px;border-radius:50%;
   background:var(--red);
   box-shadow:0 0 10px var(--red),0 0 24px var(--red);
@@ -230,6 +335,13 @@ aside{display:flex;flex-direction:column;gap:10px;min-height:0}
   0%,100%{transform:scale(1);opacity:1}
   50%{transform:scale(1.6);opacity:.5}
 }
+/* expanding radar ripples radiating from the break point */
+.cut-marker::after,.cut-marker::before{
+  content:''; position:absolute; inset:-6px; border-radius:50%;
+  border:2px solid var(--red); pointer-events:none;
+  animation:radarWave 1.6s ease-out infinite;
+}
+.cut-marker::before{animation-delay:.8s}
 .collapse-line{
   stroke:var(--red);stroke-width:1.4;opacity:.55;
   animation:collapse 1.6s ease-out forwards;
@@ -292,3 +404,24 @@ aside{display:flex;flex-direction:column;gap:10px;min-height:0}
 .pbtn.approve:hover{background:rgba(0,245,160,.12)}
 .pbtn.veto{border-color:rgba(255,42,109,.5);color:var(--red)}
 .pbtn.veto:hover{background:rgba(255,42,109,.12)}
+
+/* O-RAN rApp roles — the AI panel names what each model IS in Non-RT RIC
+   language: RCA rApp (Doctor), PdM rApp (Oracle), A1 policy (Commander). */
+.rapp-roles{
+  display:flex;flex-direction:column;gap:3px;margin:2px 0 9px;
+  font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--faint);
+  letter-spacing:.3px;line-height:1.5;
+}
+.rapp-roles b{color:var(--cyan);font-weight:700}
+
+/* site-power architecture chip (A grid+DG / B hybrid / C off-grid solar) */
+.pwr-chip{
+  font-family:'JetBrains Mono',monospace;font-size:7.5px;font-weight:700;
+  padding:1px 5px;border-radius:7px;letter-spacing:.5px;flex-shrink:0;
+  border:1px solid rgba(127,0,255,.4);color:#B57DFF;
+  background:rgba(127,0,255,.12);
+}
+.pwr-chip.B{border-color:rgba(255,150,0,.45);color:var(--amber);
+            background:rgba(255,150,0,.1)}
+.pwr-chip.C{border-color:rgba(0,245,160,.4);color:var(--green);
+            background:rgba(0,245,160,.08)}

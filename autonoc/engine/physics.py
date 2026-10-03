@@ -173,12 +173,16 @@ def update_power(node, tick: int, rng) -> None:
     elif node.battery_pct > C.GEN_START_BATTERY_PCT:
         node.power_source = "Battery"
         node.battery_pct = max(0.0, node.battery_pct - drain)
-    elif node.generator_fuel_pct > 0.0:
+    elif node.generator_fuel_pct > 0.0 and not node.ats_failed:
         node.power_source = "Generator"
         node.generator_fuel_pct = max(
             0.0, node.generator_fuel_pct - (100.0 / C.GENERATOR_TICKS))
         node.battery_pct = min(node.battery_capacity, node.battery_pct + 1.0)
     else:
+        # No usable source: either the tank is dry, or the ATS failed to
+        # crank the DG (site-power alarm raised by the engine). The battery
+        # bank keeps draining toward a site-down POWER failure. No RNG draws
+        # happen on this path, so the jam changes no draw order (I9).
         node.power_source = "Battery"
         node.battery_pct = max(0.0, node.battery_pct - drain)
 

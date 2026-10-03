@@ -9,14 +9,26 @@ with an AI layer that **diagnoses** faults (the Doctor), **predicts** failures
 (the Oracle), **acts** on them (the Commander), and **proves** the acting is
 worth it (the counterfactual study).
 
+Designed around the **O-RAN Non-Real-Time RIC** architecture: the Doctor is a
+Root-Cause-Analysis rApp correlating 3GPP PM/FM counters, the Oracle is a
+Predictive-Maintenance rApp over time-series telemetry, and the Commander is
+the **A1 policy enforcement engine** automating closed-loop RAN intent. The
+dashboard speaks operator language — **VSWR alarms, PRB utilisation, CQI,
+E-RAB drop rate, ITU-T X.733 severities** — and models the #1 OPEX line in
+Iraqi telecom: **site power** (diesel generators, battery banks, fuel theft).
+
 Built as a portfolio / learning project. Python 3.12+, FastAPI + Leaflet,
 XGBoost, PyTorch. **Deterministic** — the same seed produces the same world.
+
+> **In a hurry?** The [90-second executive pitch](docs/PITCH.md) is the
+> fastest way to see what this project is worth to an operator.
 
 ---
 
 ## Table of Contents
 
 - [Features](#features)
+- [Telecom standards alignment](#telecom-standards-alignment-3gpp--itu-t--o-ran)
 - [Architecture](#architecture)
 - [Project layout](#project-layout)
 - [The demo — "Storm over Goizha"](#the-demo--storm-over-goizha)
@@ -37,15 +49,52 @@ XGBoost, PyTorch. **Deterministic** — the same seed produces the same world.
 
 | Component | What it does |
 |---|---|
-| **Doctor** (XGBoost) | Diagnoses already-broken nodes from degraded telemetry |
-| **Oracle** (GRU) | Predicts *upcoming* failures from contiguous telemetry windows |
-| **Commander** | Decision-theory layer that acts on predictions (p > 0.4375) |
+| **Doctor** — RCA rApp (XGBoost) | Root-cause analysis over 3GPP PM/FM counters: diagnoses already-broken nodes |
+| **Oracle** — PdM rApp (GRU) | Predictive maintenance: flags *upcoming* failures from contiguous telemetry windows |
+| **Commander** — A1 policy engine | Decision-theory layer that acts on predictions (p > 0.4375), tiered autonomy |
 | **Counterfactual study** | Proves the AI is worth it — 4 arms, identical schedules per seed |
-| **API + dashboard** | FastAPI backend pushing a Leaflet single-page dashboard |
+| **Site power model** | Type A/B/C power plants, battery fade, **ATS failure-to-crank** and **fuel-theft** alarms |
+| **API + dashboard** | FastAPI backend pushing a dark, glassmorphic Leaflet command-center dashboard |
 
 A 300-tower LTE digital twin with real Sulaymaniyah geography, COST-231
 propagation, dual-core fiber/microwave topology, weather-driven exogenous
-faults, and a fully-tested engine.
+faults, ITU-T X.733 alarm severity, and a fully-tested engine.
+
+---
+
+## Telecom standards alignment (3GPP / ITU-T / O-RAN)
+
+The dashboard and FM log speak the language operators actually use. Internal
+ids, the 71-feature contract and the trained models are unchanged — the
+standards layer is derived readouts and vocabulary, never new dynamics.
+
+| Generic term | What AutoNOC shows | Standard |
+|---|---|---|
+| Antenna fault | **VSWR alarm** (VSWR = (1+|Γ|)/(1−|Γ|) from S11; 1.5 field threshold ⇔ −14 dB) | RAN FM practice |
+| Traffic congestion | **PRB utilisation ≥ 85% + CQI collapse** | 3GPP PM counters |
+| Throughput | **User throughput (QCI 9, best effort)** | 3GPP QoS (TS 23.203) |
+| Packet loss | **E-RAB drop rate (%)** | 3GPP accessibility KPI |
+| CQI 0–15 | derived from SINR | TS 36.213 Table 7.2.3-1 (linear approx.) |
+| Log severities | **CRITICAL / MAJOR / MINOR / WARNING / CLEARED** | ITU-T X.733 |
+| AI layer | **Non-RT RIC rApps + A1 policy enforcement** | O-RAN WG2 |
+
+**Site power architecture** (the #1 OPEX line in Iraq — diesel, batteries,
+grid instability):
+
+| Type | Configuration | Districts |
+|---|---|---|
+| **A** | Grid + standby diesel generator (DG) | strong-grid urban (Salim St, University, …) |
+| **B** | Hybrid DG + deep-cycle VRLA battery bank, fuel-saving cycling | bad-grid **Bakrajo** (UNSTABLE mains) |
+| **C** | Off-grid solar PV + LFP bank + DG backup | remote **Goizha** ridge (EXPOSED) |
+
+Plus the two alarms every telecom engineer recognises instantly:
+
+- **ATS FAILURE TO CRANK** — mains down, battery at the generator-start
+  level, and the diesel set does *not* start. The site drains toward site-down
+  until the switch recovers or a crew services it. (X.733 CRITICAL)
+- **FUEL THEFT / ABNORMAL FUEL DROP** — the tank loses 15–25% in one
+  telemetry interval while the DG is off; consumption cannot explain it.
+  (X.733 CRITICAL, counted in the header's PWR ALARMS metric)
 
 ---
 
@@ -214,18 +263,24 @@ Interactive docs are served by FastAPI at `http://localhost:8000/docs`.
 python -m pytest tests/ -q
 ```
 
-64 tests across the suite:
+87 tests across the suite:
 
 - **11 invariant guards** (`test_invariants.py`) — pure-engine, determinism,
   banned imports via AST, single-source-of-truth, no-preview leakage
-- **24 regression tests** (`test_regressions.py`) — availability, ring reroute,
+- **20 regression tests** (`test_regressions.py`) — availability, ring reroute,
   team arrival, fault repair, realistic tower spacing …
-- **8 AI-leakage guards** (`test_ai.py`) — no test-set information in features
-- **13 Commander tests** (`test_commander.py`) — decision-theory behaviour
-- **8 counterfactual tests** (`test_counterfactual.py`)
+- **17 telecom-standards tests** (`test_telecom.py`) — VSWR identity, CQI/PRB
+  behaviour, X.733 vocabulary, site-power types, ATS + fuel-theft alarms
+- **12 AI-leakage guards** (`test_ai.py`) — no test-set information in features
+- **14 Commander tests** (`test_commander.py`) — decision-theory behaviour
+- **7 counterfactual tests** (`test_counterfactual.py`)
+- **6 polish tests** (`test_polish.py`) — API payload/schema hygiene
 
-The suite runs automatically on every push/PR via
-[GitHub Actions](.github/workflows/ci.yml) on both Linux and Windows.
+CI: the committed [workflow](.github/workflows/ci.yml) is deploy-only; a
+test-gated replacement (ubuntu, Python 3.12, deploy `needs: test`) is ready
+at [`docs/ci-proposed.yml`](docs/ci-proposed.yml) — copy it over the workflow
+file and commit with workflow-write access to activate it (the app token on
+the branch that prepared it lacks GitHub's `workflows` permission).
 
 ## Results (honest versions)
 
@@ -252,20 +307,22 @@ Tiered autonomy: auto (throttle/shed/switch/reboot), approve (crew
 pre-dispatch), never (config changes).
 
 **M7 — counterfactual study.** Four arms on identical schedules per seed:
-A no-AI, B advisory, C autonomous, D clairvoyant. 8 seeds × 5 days:
+A no-AI, B advisory, C autonomous, D clairvoyant. Committed headline run,
+**30 seeds × 10 days** (`reports/counterfactual_summary.json`):
 
 ```
-arm   availability   downtime min   pre-empted   false
-A     98.77 ± 0.03    26,581 ± 707      0          0
-B     98.77 ± 0.03    26,580 ± 708      0          0
-C     98.90 ± 0.03    23,706 ± 669     224         0
-D     98.98 ± 0.03    22,014 ± 623     244         0
+arm   availability   downtime min     cost tower-min  pre-empted  false
+A     98.75 ± 0.02    54,033 ± 775     104,229            0        0
+B     98.75 ± 0.02    54,070 ± 773     104,385            0        4.4
+C     98.88 ± 0.02    48,369 ± 770      84,811          448        3.8
+D     98.96 ± 0.02    44,857 ± 743      83,121          491        0.0
 ```
 
-**Autonomous achieves ~63% of the clairvoyant downtime reduction.** Advisory
-is indistinguishable from no-AI: human approval latency eats the entire
-predictive advantage — the argument for autonomy. D bounds *predictive*
-maintenance, not omniscience: instant faults are excluded by construction.
+**C cuts 5,664 downtime tower-minutes and 18.6% of OPEX vs no-AI — 61.7% of
+the clairvoyant bound.** Advisory (B) is indistinguishable from no-AI: human
+approval latency eats the entire predictive advantage — the argument for
+autonomy. D bounds *predictive* maintenance, not omniscience: instant faults
+are excluded by construction.
 
 ---
 

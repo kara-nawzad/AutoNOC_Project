@@ -51,6 +51,9 @@ _slow_ticks = 0
 # None until then so module import never starts threads.
 worker = None
 
+# derived-state cursor for the predictive `warn` flag (see _node_dicts)
+_warn_sent: dict[str, bool] = {}
+
 
 def _step_locked() -> None:
     """Runs off the event loop thread; holds the lock while mutating."""
@@ -131,6 +134,12 @@ async def get_config():
             "s11_high_wind": C.THRESH_S11_HIGH_WIND, "temp": C.THRESH_TEMP,
             "packet_loss": C.THRESH_PACKET_LOSS, "cpu": C.THRESH_CPU,
         },
+        metric_labels=dict(C.METRIC_LABELS),
+        gauges={k: dict(v) for k, v in C.GAUGE_SPECS.items()},
+        x733_severity=dict(C.X733_SEVERITY),
+        power_configs=dict(C.POWER_CONFIG_NAMES),
+        vswr_alarm=C.VSWR_ALARM_THRESHOLD,
+        rapp_roles=dict(C.RAPP_ROLES),
         map_center=[(C.LAT_MIN + C.LAT_MAX) / 2, (C.LON_MIN + C.LON_MAX) / 2],
         map_zoom=12,
         bounds={"lat_min": C.LAT_MIN, "lat_max": C.LAT_MAX,
@@ -164,7 +173,40 @@ def _agg_payload() -> list[dict]:
             "health": round(ok / len(nodes) * 100.0, 1) if nodes else 100.0,
             "weather": w["type"], "wind": round(w["wind"], 1),
             "clutter": site.clutter_c,
+            # every node in a district shares its grid tier, so the site
+            # power architecture (A/B/C) is a district-level label
+            "pwr": C.POWER_CONFIG_BY_TIER[C.GRID_TIER[site.agg_id]],
         })
+    return out
+
+
+def _node_dicts(only_changed_since: int | None = None) -> list[dict]:
+    """Node payloads + the predictive rApp flag.
+
+    `warn` marks a node whose live Commander verdict sits at or above the
+    cost-derived break-even — the dashboard renders it with a WARNING-class
+    sonar ripple BEFORE it turns red. The comparison uses the served config
+    threshold; the frontend still computes nothing (I5/I6).
+
+    A verdict flip does not touch last_changed_tick, so delta clients would
+    miss it; the server therefore also emits a node whose warn state differs
+    from what was last sent. This is a derived-state cursor, not a v1-style
+    dirty flag: it cannot lose engine updates, and lag > MAX_DELTA_LAG still
+    forces a full resync.
+    """
+    out = []
+    for n in engine.nodes:
+        v = engine.ai_verdicts.get(n.node_id) if engine.ai_enabled else None
+        warn = bool(v and n.status == C.STATUS_HEALTHY
+                    and float(v.get("p_fail", 0.0)) >= C.BREAK_EVEN_PRECISION)
+        if (only_changed_since is not None
+                and n.last_changed_tick <= only_changed_since
+                and _warn_sent.get(n.node_id, False) == warn):
+            continue
+        d = n.to_dict()
+        d["warn"] = warn
+        _warn_sent[n.node_id] = warn
+        out.append(d)
     return out
 
 
@@ -198,7 +240,7 @@ def _snapshot(resync: bool) -> dict:
     return {
         "tick": engine.tick, "resync": resync, "kpis": engine.kpis(),
         "agg": _agg_payload(),
-        "nodes": [n.to_dict() for n in engine.nodes],
+        "nodes": _node_dicts(),
         "teams": [t.to_dict() for t in engine.teams],
         "logs": list(engine.logs)[-60:],
         "rings": _ring_payload(),
@@ -224,8 +266,7 @@ async def get_delta(since: int = Query(0, ge=0)):
         return {
             "tick": engine.tick, "resync": False, "kpis": engine.kpis(),
             "agg": _agg_payload(),
-            "nodes": [n.to_dict() for n in engine.nodes
-                      if n.last_changed_tick > since],
+            "nodes": _node_dicts(only_changed_since=since),
             "teams": [t.to_dict() for t in engine.teams
                       if t.last_changed_tick > since],
             "logs": [l for l in engine.logs if l["tick"] > since][-60:],
@@ -282,8 +323,9 @@ async def inject(node_id: str, kind: int = Query(3, ge=1, le=5)):
         node.fault_started_tick = engine.tick
         node.last_changed_tick = engine.tick
         F.apply_degradation(node, kind, 1.0, 1.0, engine.noise)
+        # ITU-T X.733 perceived severity for the injected fault class
         engine.log(f"MANUAL: {node_id} — {C.STATUS_NAMES[kind]} injected",
-                   "CRITICAL", node_id)
+                   C.X733_SEVERITY.get(kind, "MAJOR"), node_id)
     return {"ok": True, "node": node_id, "status": kind}
 
 

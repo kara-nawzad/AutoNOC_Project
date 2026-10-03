@@ -54,6 +54,10 @@ class ENodeB:
     battery_cycles: float = 0.0
     generator_fuel_pct: float = 100.0
     grid_available: bool = True
+    # Site-power alarms (ITU-T X.733 CRITICAL class). ats_failed jams the
+    # Automatic Transfer Switch: the DG will not crank when the battery bank
+    # hits the generator-start level, and the site drains toward site-down.
+    ats_failed: bool = False
 
     # state
     status: int = C.STATUS_HEALTHY
@@ -157,6 +161,36 @@ class ENodeB:
     def priority_mult(self) -> float:
         return C.CRITICAL_PRIORITY_MULT if self.is_critical else 1.0
 
+    # -------------------------------------------------- derived 3GPP KPIs
+    # Pure readouts of existing state — no dynamics, no new RNG draws, so
+    # determinism (I3) and the trained models' 71-feature contract are
+    # untouched. VSWR is an exact identity of return loss; CQI approximates
+    # the TS 36.213 SINR mapping; PRB utilisation is the offered-load share,
+    # saturating during a congestion alarm exactly as a real PM counter does.
+    @property
+    def vswr(self) -> float:
+        gamma = min(10.0 ** (self.s11 / 20.0), 0.98)
+        return (1.0 + gamma) / (1.0 - gamma)
+
+    @property
+    def cqi(self) -> int:
+        span = C.CQI_SINR_CEIL - C.CQI_SINR_FLOOR
+        frac = (self.sinr - C.CQI_SINR_FLOOR) / span
+        return int(round(min(1.0, max(0.0, frac)) * 15.0))
+
+    @property
+    def prb_util(self) -> float:
+        prb = self.traffic_load * 100.0
+        if self.status == C.STATUS_CONGESTION:
+            prb = max(prb, C.PRB_CONGESTION_FLOOR
+                      + 14.0 * min(1.0, max(self.fault_progress, 0.0)))
+        return min(100.0, prb)
+
+    @property
+    def power_config(self) -> str:
+        """Site power architecture type (A/B/C) from the district grid tier."""
+        return C.POWER_CONFIG_BY_TIER[self.grid_tier]
+
     def to_dict(self) -> dict:
         return {
             "id": self.node_id, "lat": round(self.lat, 6), "lon": round(self.lon, 6),
@@ -170,6 +204,12 @@ class ENodeB:
             "power": self.power_source, "voltage": round(self.voltage, 2),
             "battery": round(self.battery_pct, 1),
             "dust": round(self.dust_accum, 3),
+            # 3GPP derived readouts + site-power telemetry
+            "vswr": round(self.vswr, 2), "cqi": self.cqi,
+            "prb": round(self.prb_util, 1),
+            "pwr": self.power_config,
+            "fuel": round(self.generator_fuel_pct, 1),
+            "ats": self.ats_failed,
             "dispatched": self.tech_dispatched, "repairing": self.under_repair,
         }
 

@@ -3,19 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AutoNOC — Sulaymaniyah</title>
+<title>AutoNOC — Sulaymaniyah · Non-RT RIC</title>
 <link rel="stylesheet" href="/static/leaflet.css"/>
-<link rel="stylesheet" href="/static/styles.css?v=6">
+<link rel="stylesheet" href="/static/styles.css?v=7">
 </head>
 <body>
 <header id="hdr">
   <div class="logo">AUTO<span>NOC</span></div>
-  <div class="hdr-sub">Sulaymaniyah &middot; LTE 2100&nbsp;MHz</div>
+  <div class="hdr-sub">Sulaymaniyah &middot; LTE 2100&nbsp;MHz &middot; O-RAN Non-RT&nbsp;RIC</div>
   <div class="hdr-metrics">
     <div class="hm"><label>SIM TIME</label><span id="m-time">—</span></div>
     <div class="hm"><label>AVAILABILITY</label><span id="m-avail" class="big">—</span></div>
-    <div class="hm"><label>HEALTHY</label><span id="m-healthy">—</span></div>
-    <div class="hm"><label>FAULTS</label><span id="m-faults" class="warn">—</span></div>
+    <div class="hm"><label>IN SERVICE</label><span id="m-healthy">—</span></div>
+    <div class="hm"><label>ACTIVE ALARMS</label><span id="m-faults" class="warn">—</span></div>
+    <div class="hm"><label>PWR ALARMS</label><span id="m-pwr" class="warn">—</span></div>
     <div class="hm"><label>CREWS OUT</label><span id="m-teams">—</span></div>
     <div class="hm"><label>MTTR</label><span id="m-mttr">—</span></div>
   </div>
@@ -31,11 +32,11 @@
 <main>
   <aside id="rail-l">
     <section class="panel">
-      <h3>Network Status</h3>
+      <h3>Alarm Status <span class="h3-note">ITU-T X.733</span></h3>
       <div id="status-bars"></div>
     </section>
     <section class="panel grow">
-      <h3>Aggregation Sites</h3>
+      <h3>Aggregation Sites <span class="h3-note">site power A/B/C</span></h3>
       <div id="agg-list"></div>
     </section>
     <section class="panel">
@@ -53,20 +54,20 @@
       <div id="incidents"></div>
     </section>
     <section class="panel" id="ai-panel">
-      <h3>AI Performance</h3>
+      <h3>Non-RT RIC <span class="h3-note">AI rApps · A1 policy</span></h3>
       <div id="ai-body">Loading…</div>
     </section>
     <section class="panel grow">
-      <h3>Node Inspector</h3>
+      <h3>Node Inspector <span class="h3-note">3GPP PM counters</span></h3>
       <div id="inspector" class="empty">Select a node on the map</div>
     </section>
     <section class="panel logs">
-      <h3>Event Log</h3>
+      <h3>FM Event Log <span class="h3-note">X.733 severity</span></h3>
       <div id="log"></div>
     </section>
   </aside>
 </main>
 <script src="/static/leaflet.js"></script>
-<script src="/static/app.js?v=6"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>

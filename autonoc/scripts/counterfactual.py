@@ -5,7 +5,7 @@ Four arms on IDENTICAL exogenous schedules per seed (I10):
 
     A  no AI       reactive dispatch only — the status quo
     B  advisory    the Oracle suggests; a human approves crew pre-dispatches
-                   after a realistic latency (6 ticks = 30 min). NO automatic
+                   after a realistic latency (2 ticks = 10 min). NO automatic
                    tier-1 actions.
     C  autonomous  the Commander acts: tier-1 mitigations applied instantly,
                    tier-2 pre-dispatches approved fast (1 tick — a

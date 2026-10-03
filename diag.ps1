@@ -15,8 +15,9 @@ Write-Host "[2] Project files:" -ForegroundColor Yellow
 $files = @(
   "autonoc\api\main.py",
   "autonoc\engine\engine.py",
+  "autonoc\engine\config.py",
   "autonoc\web\app.js",
-  "install_autonoc.py",
+  "requirements.txt",
   "tests\test_polish.py"
 )
 foreach ($f in $files) {

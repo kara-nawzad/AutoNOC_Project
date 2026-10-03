@@ -34,13 +34,25 @@ class NodeModel(BaseModel):
     temp: float = Field(ge=-20.0, le=100.0)
     cpu: float = Field(ge=0.0, le=100.0)
 
+    # derived 3GPP readouts (VSWR from S11, CQI from SINR, PRB utilisation)
+    vswr: float = Field(ge=1.0, le=60.0)
+    cqi: int = Field(ge=0, le=15)
+    prb: float = Field(ge=0.0, le=100.0)
+
     power: Literal["Grid", "Solar", "Battery", "Generator"]
+    # site power architecture: A grid+standby DG, B hybrid DG+battery,
+    # C off-grid solar PV + DG backup
+    pwr: Literal["A", "B", "C"]
     voltage: float = Field(ge=0.0, le=20.0)
     battery: float = Field(ge=0.0, le=100.0)
+    fuel: float = Field(ge=0.0, le=100.0)
+    ats: bool = False                  # ATS failure-to-crank alarm latched
     dust: float = Field(ge=0.0, le=1.0)
 
     dispatched: bool
     repairing: bool
+    # predictive rApp: a live Commander verdict sits at/above break-even
+    warn: bool = False
 
 
 class TeamModel(BaseModel):
@@ -74,6 +86,9 @@ class KPIModel(BaseModel):
     injected: int = Field(ge=0)
     masked: int = Field(ge=0)
     repairs: int = Field(ge=0)
+    # site-power facility alarms (OPEX story)
+    ats_failures: int = Field(0, ge=0)
+    fuel_thefts: int = Field(0, ge=0)
 
 
 class AggModel(BaseModel):
@@ -87,12 +102,15 @@ class AggModel(BaseModel):
     weather: str
     wind: float
     clutter: float
+    pwr: Literal["A", "B", "C"] = "A"   # district site-power configuration
 
 
 class LogModel(BaseModel):
     tick: int
     time: str
-    severity: Literal["INFO", "SUCCESS", "HIGH", "CRITICAL"]
+    # ITU-T X.733 perceived severity classes (plus INFO for operational
+    # notices). The event log is a telecom FM log, not an app console.
+    severity: Literal["INFO", "WARNING", "MINOR", "MAJOR", "CRITICAL", "CLEARED"]
     message: str
     node_id: Optional[str] = None
 
@@ -134,6 +152,15 @@ class ConfigResponse(BaseModel):
     status_names: dict[int, str]
     status_colors: dict[int, str]
     thresholds: dict[str, float]
+    # 3GPP telecom layer: display labels, inspector gauge specs, X.733
+    # classes, site-power configurations and O-RAN rApp roles — all served
+    # from the engine config, hard-coded nowhere in the frontend (I5).
+    metric_labels: dict[str, str] = {}
+    gauges: dict[str, dict] = {}
+    x733_severity: dict[int, str] = {}
+    power_configs: dict[str, str] = {}
+    vswr_alarm: float = 1.5
+    rapp_roles: dict[str, str] = {}
     map_center: list[float]
     map_zoom: int
     bounds: dict[str, float]

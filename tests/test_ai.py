@@ -116,6 +116,7 @@ def test_baseline_b0_is_reported():
     assert m["baselines"]["B0_accuracy"] > 0.95
 
 
+@needs_data
 @needs_model
 def test_model_is_not_memorising_geography():
     """Static site attributes alone must be near-useless.

@@ -155,7 +155,7 @@ def mark_preempted(engine, node) -> bool:
     engine.stats["acted_upon"] += 1
     engine.log(f"PRE-EMPTED {node.node_id} — "
                f"{C.STATUS_NAMES.get(entry.get('kind', 0), 'fault')} "
-               f"stopped before activation", "SUCCESS", node.node_id)
+               f"stopped before activation", "CLEARED", node.node_id)
     return True
 
 

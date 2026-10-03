@@ -796,26 +796,28 @@ python -m autonoc.scripts.counterfactual --rules    # rules verdicts, no models
 
 ### 21. Testing
 
-**70 test functions** across 6 files (the README's "64" and its per-file
-breakdown are stale — audit §29):
+**87 test functions** across 7 files:
 
 | File | Tests | What they guard |
 |------|-------|-----------------|
 | `test_invariants.py` | 11 | I1–I12 as far as they are machine-checkable: pure engine (AST banned imports), single clock, determinism (seed 42 twice ⇒ identical state at tick 5000), step() speed ratio, no colours/thresholds in `web/`, no-preview leakage, 5 RNG streams |
 | `test_regressions.py` | 20 | availability, ring reroute, team arrival, fault repair, realistic tower spacing, … |
+| `test_telecom.py` | 17 | the standards layer (v2.1): 3GPP vocabulary, VSWR = exact S11 identity, CQI/PRB behaviour, X.733 severities end-to-end, power types A/B/C, ATS failure-to-crank, fuel theft, payload/schema/config boundaries, power-event determinism |
 | `test_ai.py` | 12 | no test-set information in features, episode disjointness, the leak audit |
 | `test_commander.py` | 14 | decision-theory behaviour, break-even derivation, tier routing, pre-emption gating on the ledger |
 | `test_counterfactual.py` | 7 | identical episode denominators across arms, arm determinism, summary math |
 | `test_polish.py` | 6 | seed 131 is demo-worthy (score ≥ 13/15), demo plan narrates every act, **the demo fault is actually pre-empted by the trained models** (skipped when model artifacts are absent), docs/requirements deliverables |
 
-`test_docs_and_dependencies_exist` currently **fails** on the committed
-`requirements.txt`: it asserts `"xgboost" in reqs`, and the committed file
-does not list xgboost (audit §29).
+Four tests are gated on the gitignored `data/` directory and skip on a fresh
+clone (that is deliberate — `@needs_data`). `test_model_is_not_memorising_geography`
+was missing that gate (audit §29 #10) and now carries it.
 
-**CI reality (audit):** the GitHub Actions workflow "CI & Deploy" runs
-`flyctl deploy --remote-only` on push/PR to main — it **deploys, but does not
-run the test suite**, on ubuntu only. The README's claim that the suite runs
-"on both Linux and Windows" does not match the committed workflow.
+**CI:** the committed workflow "CI & Deploy" is still deploy-only — GitHub
+rejected the update from this branch's app token (no `workflows` permission).
+A test-gated replacement (ubuntu-latest, Python 3.12, CPU-only torch wheel
+for speed, fly.io deploy `needs: test`) is committed ready-to-use at
+`docs/ci-proposed.yml`; copying it over `.github/workflows/ci.yml` with a
+human account activates it.
 
 ---
 
@@ -867,21 +869,42 @@ early build's 118 °C / +8.5 dB S11 / 1194 ms latency drift at the boundary.)
 ### 23. The dashboard
 
 Single page, vanilla JS + Leaflet (bundled offline, `leaflet.js`/`leaflet.css`
-in `web/`), 670 lines of `app.js`. It **renders, never computes** (I6): every
-name, colour, and threshold arrives from `/api/config`.
+in `web/`). It **renders, never computes** (I6): every name, colour,
+threshold, gauge spec and alarm label arrives from `/api/config`.
 
-Layout: map centre (node markers by status, agg-site markers, fiber rings
-with cut points, animated crew vehicles, storm overlays), left rail (district
-health list, team list), right rail (inspector, incident panel), bottom
-(status bars — availability / healthy / faults / active teams / MTTR / sim
-time — and the event log), and the **AI panel**: live pre-empted /
-false-dispatch / precision / break-even / crew-hours-saved, pending tier-2
-actions with approve/veto buttons and auto-approve countdowns, and the mode
-indicator (`ml` vs `rules` vs `off`). Controls: pause/resume, speed, **CUT
-FIBER**, ENABLE AI.
+**Visual language (v2.1 "dark command center"):** CartoDB Dark Matter
+basemap, glassmorphic panels (`rgba(13,20,36,.75)` + 12 px backdrop blur +
+`0 8px 32px rgba(0,0,0,.37)` shadow), neon node markers with a soft canvas
+halo (healthy `#00ff88`-family colours from the config; faults radar-ripple
+red via CSS keyframes), amber **sonar pings on nodes the PdM rApp has flagged
+`warn`** (still in service, p ≥ break-even — the prediction shown *before*
+the failure), fiber rings as SVG polylines whose `stroke-dashoffset`
+animates like data flowing to the core (cut ⇒ red, frozen, rippling), crew
+vehicles that **glide** with a CSS transition whose duration tracks the sim
+speed, and KPI numbers that **tween like an odometer** (rAF, ease-out-cubic,
+~450 ms) instead of snapping.
 
-Polling: `/api/data` once on load, then `/api/delta?since=<last tick>` every
-second at 1× speed (the client scales polling with the sim speed).
+Layout: map centre (node markers, agg sites, fiber rings with cut points,
+crew vehicles, storm overlays), left rail (district health list with
+**PWR A/B/C chips** per site-power type, team list), right rail (inspector
+with **mini colour-coded gauges** for every radio/hardware/power metric —
+fill % and warn/bad bands driven by the served `GAUGE_SPECS` — plus PdM-warn
+/ ATS tags and X.733-labelled inject buttons; incident panel), bottom (status
+bars — availability / healthy / faults / **PWR alarms (ATS + fuel thefts)** /
+active teams / MTTR / sim time — and the FM event log colour-coded by X.733
+severity), and the **AI panel** headed by the O-RAN rApp roles (RCA rApp /
+PdM rApp / A1 policy): live pre-empted / false-dispatch / precision /
+break-even / crew-hours-saved, pending tier-2 actions with approve/veto
+buttons and auto-approve countdowns, and the mode indicator (`ml` vs `rules`
+vs `off`). Controls: pause/resume, speed, **CUT FIBER**, ENABLE AI.
+
+Polling: `/api/data` once on load, then a `setTimeout` chain on
+`/api/delta?since=<last tick>` at `clamp(1000/speed, 300, 2000)` ms — the
+client genuinely tracks the sim speed (1× ≈ 1 poll/s, 4× ≈ 4 polls/s), and
+the vehicle-glide transition duration is set from the same cadence so motion
+stays smooth at every speed. Delta payloads include a node whenever its
+derived `warn` verdict flips (server-side `_warn_sent` cursor), so sonar
+pings appear/disappear without waiting for a full resync.
 
 ---
 
@@ -1005,47 +1028,33 @@ relative paths — work from any clone).
   interference beyond the neighbour ripple, no demand shocks beyond traffic
   curves.
 
-### 29. Known issues and inconsistencies (audited against the code, 2026-08)
+### 29. Known issues and inconsistencies (audited against the code, 2026-08; resolutions marked)
 
-1. **`requirements.txt` — verified behaviour.**
-   - The file installs fine: pip's requirements-file parser silently drops
-     the trailing `--index-url https://pytorch.org` from the `torch` line
-     (options must be on their own line), so torch comes from PyPI (CUDA
-     build, large). A live `pip install --dry-run -r requirements.txt`
-     resolves successfully.
-   - **Genuinely missing:** `pandas`, `scikit-learn`, `xgboost` — imported by
-     `ai/train.py` and `ai/oracle.py`. The server itself degrades gracefully
-     without them (rules mode), but the **training pipeline cannot run** from
-     a fresh clone, and the project's own test
-     `test_docs_and_dependencies_exist` asserts `"xgboost" in reqs` — so the
-     committed test suite currently fails on that file. (Fix in progress:
-     the three packages are added to `requirements.txt` in this branch —
-     purely additive; the working `torch` line is untouched.)
-2. **Model artifacts split between committed and gitignored.**
-   `models/doctor_xgb.json` + `feature_order.json` are committed, but
-   `.gitignore` excludes `models/*.npz` and `models/*.pt`, so
-   `doctor_scaler.npz`, `oracle_gru.pt`, `oracle_stats.npz` are **not on
-   GitHub**. Consequence: a fresh clone boots in **RULES MODE** until the
-   full pipeline is re-run. The running fly.io app "works perfectly" because
-   either (a) it was deployed from a local directory whose untracked model
-   files were baked in by `COPY . .` (`.dockerignore` does not exclude
-   `models/`), or (b) the presenter has simply not noticed rules mode.
-   Remedy in this branch: regenerate the three artifacts and commit them,
-   so any build — including the CI auto-deploy from `main` — ships in ML
-   mode. (This also activates
-   `test_cast_seed_is_verified_by_models`, which is skipped while
-   `oracle_gru.pt` is absent.)
-3. **README test count is stale.** README: "64 tests (11 + 24 + 8 + 13 + 8)".
-   Actual: **70 test functions** — invariants 11, regressions 20, AI 12,
-   commander 14, counterfactual 7, polish 6.
-4. **README CI claim does not match the workflow.** README: "runs
-   automatically on every push/PR via GitHub Actions on both Linux and
-   Windows". The committed `ci.yml` is deploy-only (`flyctl deploy
-   --remote-only`, ubuntu), with no test job and no Windows runner.
-5. **README M7 table is from an older run.** README quotes 8 seeds × 5 days
-   (98.77 / 98.90 / 98.98 availability); `reports/counterfactual_summary.json`
-   is a 30 seeds × 10 days run (98.75 / 98.88 / 98.96; headline 61.7% vs the
-   README's ~63%). Both are valid; the committed report is the more recent.
+1. ~~**`requirements.txt` missing `pandas`/`scikit-learn`/`xgboost`.**~~
+   **RESOLVED:** all three are committed in `requirements.txt`; the training
+   pipeline runs from a fresh clone and `test_docs_and_dependencies_exist`
+   passes. (The trailing `--index-url https://pytorch.org` on the torch line
+   is still silently dropped by pip's requirements parser — documented in the
+   file itself and kept because the working fly.io deploy uses that exact
+   line. CI installs a CPU-only torch wheel first to stay fast.)
+2. ~~**Model artifacts split between committed and gitignored.**~~
+   **RESOLVED:** `doctor_scaler.npz`, `oracle_gru.pt` and `oracle_stats.npz`
+   are committed alongside `doctor_xgb.json` / `feature_order.json`, so a
+   fresh clone — and any CI auto-deploy from `main` — boots in **ML mode**,
+   and `test_cast_seed_is_verified_by_models` runs instead of skipping.
+3. ~~**README test count is stale ("64").**~~ **RESOLVED:** README now says
+   **87** (invariants 11, regressions 20, telecom 17, AI 12, commander 14,
+   counterfactual 7, polish 6) matching `pytest --collect-only`.
+4. ~~**README CI claim ("Linux and Windows") did not match a deploy-only
+   workflow.**~~ **MOSTLY RESOLVED:** README no longer overclaims, and a real
+   ubuntu test job (deploy `needs: test`) is committed at
+   `docs/ci-proposed.yml` — it cannot be moved into `.github/workflows/` from
+   this branch's app token (GitHub requires the `workflows` permission), so a
+   human commit finishes the swap.
+5. ~~**README M7 table was from an older 8×5 run.**~~ **RESOLVED:** README
+   now quotes the committed 30 seeds × 10 days summary (98.75 / 98.75 /
+   98.88 / 98.96 availability; C saves 5,664 downtime tower-min and 18.6%
+   OPEX; 61.7% of the clairvoyant bound).
 6. **`TRUE_PREVALENCE` config vs measured.** `config.py` documents
    `TRUE_PREVALENCE = 0.022` (from review #2), while the committed Doctor
    test-set measure is 1.32% prevalence. The constant is documentation-grade
@@ -1059,6 +1068,13 @@ relative paths — work from any clone).
    run-in-place from the repo root, not pip-installed.
 9. **Python version.** Target is 3.12+ (badge, Dockerfile 3.12.14). The code
    runs on 3.11 as well; nothing 3.12-specific was found.
+10. ~~**`test_model_is_not_memorising_geography` failed on fresh clones.**~~
+    **RESOLVED (v2.1):** the test reads `data/train.csv` (gitignored) but was
+    gated only with `@needs_model`; it now carries `@needs_data` too and skips
+    cleanly without the dataset.
+11. ~~**`counterfactual.py` docstring said arm-B approval latency was "6 ticks
+    = 30 min" while `APPROVE_LATENCY["B"] == 2`.**~~ **RESOLVED (v2.1):**
+    docstring corrected to 2 ticks = 10 min, matching §32 and the code.
 
 ### 30. File map
 
@@ -1156,10 +1172,109 @@ docs/                this file
 | Embargo | 24 ticks | data pipeline |
 | Watchdog | 120 ticks (10 h) | no orphaned faults |
 | M7 approval latencies | B 10 min / C 5 min / D 0 | counterfactual arms |
+| VSWR field alarm | 1.5 (⇔ S11 −14 dB) | RF/antenna faults |
+| CQI window | SINR [−5, 20] dB → CQI [0, 15] | congestion readout |
+| PRB congestion floor | ≥ 85% (+14·progress) | congestion readout |
+| ATS crank-fail chance | 0.04 per crank request | site-power alarm |
+| ATS recovery chance | 0.20/tick while jammed | site-power alarm |
+| Fuel-theft chance | 2×10⁻⁵/tick, ≥ 20% fuel, DG off | site-power alarm |
+| Fuel-theft drop | uniform(15, 25)% of tank | site-power alarm |
+| X.733 severities | power/backhaul CRITICAL, rest MAJOR | FM log |
+| Poll cadence | clamp(1000/speed, 300, 2000) ms | dashboard |
 | Demo seed | 131 (score 14/15) | the story |
 
 ---
 
+### 33. Telecom standards alignment (v2.1)
+
+The reframing that turns "a simulation with AI" into "an O-RAN Non-RT RIC
+demo a telecom operator recognises". Design rule for the whole change:
+**vocabulary and derived readouts only — zero change to engine dynamics.**
+The 71-feature Doctor contract, the Oracle windows, the committed models,
+determinism (I3) and every committed report stay valid; all new labels,
+colours, thresholds and gauge specs live in `config.py` and are served via
+`/api/config` (I5).
+
+**Language (config `STATUS_NAMES` / `METRIC_LABELS` / `X733_SEVERITY`):**
+
+| Was | Now | Basis |
+|---|---|---|
+| Healthy | In Service | — |
+| Congestion | PRB Congestion | 3GPP PM counter |
+| Antenna / RF fault | VSWR Alarm | field practice: VSWR > 1.5 |
+| Overheat | Thermal Overheat | — |
+| Backhaul down | Backhaul Isolated | FM convention |
+| "Packet Loss" | E-RAB Drop Rate | 3GPP accessibility KPI |
+| "Throughput" | User Throughput (QCI 9) | TS 23.203 default bearer |
+| log HIGH / SUCCESS | MINOR / WARNING / … / CLEARED | ITU-T X.733 |
+
+**Derived 3GPP KPIs** (pure functions of existing state, in
+`ENodeB.to_dict`/properties — no new RNG draws in physics):
+
+- **VSWR** = (1+|Γ|)/(1−|Γ|) with |Γ| = 10^(S11/20) — the exact identity, so
+  S11 = −22 dB → 1.17, −14 dB → 1.50 (the alarm point), −10 dB → 1.93.
+- **CQI 0–15** — linear map of SINR over [−5, 20] dB, a documented
+  approximation of TS 36.213 Table 7.2.3-1; collapses as interference rises.
+- **PRB utilisation** — offered `traffic_load` in service; pinned to a
+  `85 + 14·fault_progress` floor while a PRB-Congestion alarm is active, the
+  way a real cell reads when demand exceeds schedulable capacity.
+
+**Site power architecture** (`POWER_CONFIG_BY_TIER`, exposed per node as
+`pwr` and per district in the agg payload): Type **A** grid + standby DG
+(strong-grid urban), Type **B** hybrid DG + VRLA bank with fuel-saving
+cycling (UNSTABLE-grid Bakrajo), Type **C** off-grid solar PV + LFP + DG
+backup (EXPOSED Goizha ridge). Existing grid/fuel/battery physics was
+already there; v2.1 names it and adds two alarms, drawn **only** from the
+ops RNG stream (`rng_ops`) so the physics noise pool — and therefore the
+feature stream the models were trained on — is untouched:
+
+- **ATS FAILURE TO CRANK** (4%/crank request): mains down + battery at
+  `GEN_START_BATTERY_PCT` + fuel in tank, but the transfer switch jams; the
+  generator branch in `physics.update_power` is gated on `not ats_failed`, so
+  the site drains toward site-down (`_check_power_failure` treats a jam with
+  empty battery exactly like a dry tank). 20%/tick self-recovery; mains
+  restoration resets the latch; `_complete_repair` clears it too.
+- **FUEL THEFT / ABNORMAL FUEL DROP** (2×10⁻⁵/tick, tank ≥ 20%, DG off):
+  uniform(15, 25)% vanishes in one telemetry interval — consumption can't
+  explain it, security must.
+
+Both are logged X.733 **CRITICAL**, counted in `engine.stats` /
+`kpis()` (`ats_failures`, `fuel_thefts`), and surfaced as the header's
+**PWR ALARMS** metric.
+
+**O-RAN framing** (`RAPP_ROLES`, shown in the AI panel): Doctor = **RCA rApp**
+correlating 3GPP PM/FM counters, Oracle = **Predictive-Maintenance rApp**
+over time-series telemetry, Commander = **A1 policy enforcement** of
+closed-loop RAN intent. The Non-RT RIC is literally this project's shape:
+slow-loop analytics (every 6 ticks) issuing policies/actions to the
+"near-RT" engine.
+
+**Predictive `warn` flag:** the API derives, per node, `warn = verdict &&
+healthy && p_fail ≥ BREAK_EVEN_PRECISION` and ships it in both snapshot and
+delta payloads (a `_warn_sent` cursor forces a delta row whenever the
+verdict flips, since flips don't touch `last_changed_tick`). The frontend
+renders it as the amber sonar ping — the PdM rApp's opinion visible on the
+map before any failure.
+
+**Dashboard motion/dark pass:** Dark Matter basemap, glassmorphism, neon
+haloes, radar ripples on faults, animated SVG fiber flow (red + frozen +
+rippling when cut), CSS-transitioned crew glide, odometer-tweened KPIs,
+speed-tracked `setTimeout` polling. All cosmetic layers; the render-never-
+compute invariant (I6) is unbroken — every colour/band/label still arrives
+from `/api/config`.
+
+**Tests:** `tests/test_telecom.py` (17) guards each row above, including the
+exact VSWR identity, gauge-spec consistency, X.733-only log output, both
+power alarms (monkeypatched probabilities), payload/schema boundaries and
+fuel/ATS determinism.
+
+**Executive pitch:** `docs/PITCH.md` — 90-second hook / numbers / live demo /
+ROI script built on the committed M7 summary (5,664 downtime tower-minutes
+saved, 18.6% OPEX cut, 34 alarms → 1 splicing ticket).
+
+---
+
 *These notes were generated from the code at branch `arena/01a04463-autonoc-project`
-(2026-08-27). Where the README and the committed artifacts disagree, the code
+(2026-08-27) and extended for the v2.1 telecom-standards pass (§33,
+2026-10). Where the README and the committed artifacts disagree, the code
 and the artifacts win and the discrepancy is listed in §29.*

@@ -74,7 +74,9 @@ class NOCEngine:
         self.stats = {"injected": 0, "masked": 0, "repairs": 0,
                       "remote_resets": 0, "self_healed": 0,
                       # M6 — Commander accounting
-                      "pre_empted": 0, "acted_upon": 0, "false_dispatch": 0}
+                      "pre_empted": 0, "acted_upon": 0, "false_dispatch": 0,
+                      # site-power facility alarms (X.733 CRITICAL class)
+                      "ats_failures": 0, "fuel_thefts": 0}
 
         # M6 — Commander state.
         #   ai_mode      "off" | "ml" | "rules"  (set by the inference layer)
@@ -144,6 +146,7 @@ class NOCEngine:
             P.update_dust(node, w["type"], w["rain"])
             P.update_thermal(node, self.tick, w["temp_delta"], self.noise)
             P.update_radio(node, site.clutter_c, penalty, w["wind"], self.noise)
+            self._power_events(node)
             P.update_power(node, self.tick, self.noise)
             self._check_power_failure(node)
             self._tick_self_heal(node)
@@ -220,7 +223,9 @@ class NOCEngine:
         node.fault_started_tick = self.tick
         node.last_changed_tick = self.tick
         F.apply_degradation(node, ev.kind, 1.0, ev.severity, self.rng_physics)
-        sev = "CRITICAL" if ev.kind in (C.STATUS_RF, C.STATUS_POWER) else "HIGH"
+        # ITU-T X.733 perceived severity, straight from the config map:
+        # Power/Backhaul CRITICAL, congestion/overheat/VSWR MAJOR.
+        sev = C.X733_SEVERITY.get(ev.kind, "MAJOR")
         self.log(f"{node.node_id} — {C.STATUS_NAMES[ev.kind]}"
                  f"{' (marginal)' if ev.severity < 1.0 else ''}", sev, node.node_id)
 
@@ -265,18 +270,64 @@ class NOCEngine:
                     n = self.net.by_id[nid]
                     n.latency = min(C.MAX_LATENCY_MS, n.latency * 1.6)
                     n.last_changed_tick = self.tick
+                # X.733 MINOR: protection lost, service NOT interrupted
                 self.log(f"Fiber cut {seg.seg_id} ({ev.cause}) — ring "
                          f"{ev.ring_id} rerouting, UNPROTECTED. "
-                         f"{len(ring.node_ids)} nodes at risk", "HIGH")
+                         f"{len(ring.node_ids)} nodes at risk", "MINOR")
+
+    def _power_events(self, node) -> None:
+        """Site-power facility events: ATS failure to crank, fuel theft.
+
+        Both are the OPEX alarms operators lose sleep (and money) over, and
+        both raise ITU-T X.733 CRITICAL notifications. They draw from the
+        ops RNG stream (I9) and make NO draws inside physics.update_power, so
+        the physics noise order is untouched.
+        """
+        # ---- ATS (Automatic Transfer Switch) ----
+        if node.grid_available:
+            if node.ats_failed:
+                node.ats_failed = False   # mains back: ATS resets with the plant
+        elif node.ats_failed:
+            # jammed: retry the crank every tick until the switch recovers
+            if self.rng_ops.random() < C.ATS_RECOVER_CHANCE:
+                node.ats_failed = False
+                self.log(f"{node.node_id} ATS recovered — DG cranked, "
+                         f"plant back on generator", "CLEARED", node.node_id)
+        elif (node.battery_pct <= C.GEN_START_BATTERY_PCT
+              and node.generator_fuel_pct > 0.0):
+            # a crank is being requested RIGHT NOW (battery at the generator
+            # start level, fuel in the tank) — roll the transfer switch
+            if self.rng_ops.random() < C.ATS_CRANK_FAIL_CHANCE:
+                node.ats_failed = True
+                self.stats["ats_failures"] += 1
+                self.log(f"{node.node_id} ATS FAILURE TO CRANK — mains down, "
+                         f"battery {node.battery_pct:.0f}%, DG did NOT start",
+                         "CRITICAL", node.node_id)
+
+        # ---- fuel theft / abnormal fuel drop ----
+        # The DG is OFF but the tank lost 15-25% in one telemetry interval —
+        # consumption cannot explain it. The classic Middle-East OPEX leak.
+        if (node.generator_fuel_pct >= C.FUEL_THEFT_MIN_FUEL_PCT
+                and node.power_source != "Generator"
+                and self.rng_ops.random() < C.FUEL_THEFT_CHANCE):
+            drop = self.rng_ops.uniform(*C.FUEL_THEFT_DROP_PCT)
+            node.generator_fuel_pct = max(0.0, node.generator_fuel_pct - drop)
+            self.stats["fuel_thefts"] += 1
+            self.log(f"{node.node_id} FUEL THEFT — abnormal DG fuel drop "
+                     f"(-{drop:.0f}% in one interval, {node.power_config} "
+                     f"site, tank now {node.generator_fuel_pct:.0f}%)",
+                     "CRITICAL", node.node_id)
 
     def _check_power_failure(self, node) -> None:
         dead = (not node.grid_available and node.battery_pct <= 0.5
-                and node.generator_fuel_pct <= 0.0)
+                and (node.generator_fuel_pct <= 0.0 or node.ats_failed))
         if dead and node.status == C.STATUS_HEALTHY:
             node.status = C.STATUS_POWER
             node.fault_started_tick = self.tick
             node.last_changed_tick = self.tick
-            self.log(f"{node.node_id} OFFLINE — total power loss",
+            cause = ("ATS jammed — DG never cranked" if node.ats_failed
+                     else "total power loss")
+            self.log(f"{node.node_id} OFFLINE — {cause}",
                      "CRITICAL", node.node_id)
 
     def _tick_self_heal(self, node) -> None:
@@ -303,11 +354,13 @@ class NOCEngine:
         node.under_repair = False
         node.assigned_team = None
         node.fault_started_tick = -1
+        node.ats_failed = False          # a service visit resets the ATS
         node.last_changed_tick = self.tick
         node.s11 += (-22.0 - node.s11) * 0.8
         node.packet_loss *= 0.2
         node.latency = min(node.latency, 40.0)
-        self.log(f"{node.node_id} restored — {reason}", "SUCCESS", node.node_id)
+        # X.733 clear notification
+        self.log(f"{node.node_id} restored — {reason}", "CLEARED", node.node_id)
 
     def _ripple(self) -> None:
         for node in self.net.nodes:
@@ -425,7 +478,7 @@ class NOCEngine:
                     self.stats["false_dispatch"] += 1
                     self.log(f"{team.name} released from {inc.target_id} — "
                              f"no fault within the prediction window "
-                             f"(FALSE DISPATCH)", "HIGH", inc.target_id)
+                             f"(FALSE DISPATCH)", "WARNING", inc.target_id)
                     if node is not None:
                         node.tech_dispatched = False
                         node.assigned_team = None
@@ -460,8 +513,9 @@ class NOCEngine:
                 if n is not None and n.is_faulty:
                     if n.status == C.STATUS_POWER:
                         n.grid_available = True
-                        n.generator_fuel_pct = 100.0
+                        n.generator_fuel_pct = 100.0   # tank refuelled on visit
                         n.battery_pct = max(n.battery_pct, 50.0)
+                        n.ats_failed = False           # ATS serviced
                     n.dust_accum = 0.0        # service cleans filters
                     self._heal(n, f"repaired by {team.name}")
             mttr = (self.tick - team.mission_start_tick) * C.TICK_MINUTES
@@ -488,7 +542,7 @@ class NOCEngine:
                 node.assigned_team = None
                 self.log(f"WATCHDOG: {node.node_id} unrepaired for "
                          f"{self.tick - node.fault_started_tick} ticks — re-queued",
-                         "HIGH", node.node_id)
+                         "MAJOR", node.node_id)
 
     # ------------------------------------------------------------ commander (M6)
     def _commander_hook(self) -> None:
@@ -551,9 +605,10 @@ class NOCEngine:
             "tier": 2, "label": C.STATUS_NAMES.get(int(cls), "Fault"),
             "created_tick": self.tick, "state": "pending",
         })
+        # X.733 WARNING: a predictive notification, not yet a fault
         self.log(f"AI: pre-dispatch {node_id} proposed "
                  f"({C.STATUS_NAMES.get(int(cls), 'fault')}, P={p:.2f}) — "
-                 f"awaiting approval", "HIGH", node_id)
+                 f"awaiting approval", "WARNING", node_id)
 
     def approve_action(self, action_id: int) -> dict:
         """Operator approves a tier-2 action. Sends the crew immediately."""
@@ -603,7 +658,7 @@ class NOCEngine:
         free = [t for t in self.net.teams if t.available]
         if not free:
             self.log(f"PRE-DISPATCH {node.node_id} deferred — fleet busy",
-                     "HIGH", node.node_id)
+                     "WARNING", node.node_id)
             return {"ok": False, "reason": "no crew available"}
         skill = C.REPAIR_SKILL.get(cls, "GENERAL")
         repair = C.REPAIR_TICKS.get(cls, 12)
@@ -701,7 +756,7 @@ class NOCEngine:
                     "isolated": True, "nodes_dark": dark}
 
         self.log(f"Fiber cut {made[0]} ({cause}) — ring {ring.ring_id} "
-                 f"rerouting, UNPROTECTED", "HIGH")
+                 f"rerouting, UNPROTECTED", "MINOR")
         return {"ok": True, "ring": ring.ring_id, "segments": made,
                 "isolated": False, "nodes_dark": 0}
 
@@ -727,4 +782,7 @@ class NOCEngine:
             "injected": self.stats["injected"],
             "masked": self.stats["masked"],
             "repairs": self.stats["repairs"],
+            # site-power facility alarms (OPEX story for the executive view)
+            "ats_failures": self.stats["ats_failures"],
+            "fuel_thefts": self.stats["fuel_thefts"],
         }

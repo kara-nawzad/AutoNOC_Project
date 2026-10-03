@@ -26,6 +26,8 @@ let CFG = null;
 let map, canvas;
 let lastTick = 0, failures = 0, selected = null;
 let mapOk = false;              // false if the map library failed to load
+let simSpeed = 1.0;             // tracked from the speed buttons + /api/health
+let pollTimer = null;
 
 /* On-screen error logger: any JavaScript error is appended to the Event Log
  * panel so it is VISIBLE on the page and can be pasted back for debugging.
@@ -47,14 +49,38 @@ window.addEventListener('error', e => onScreenError(e.message || 'unknown JS err
 window.addEventListener('unhandledrejection', e => onScreenError('async: ' + (e.reason || 'unknown')));
 
 const dots = new Map();     // id -> visible canvas marker
+const halos = new Map();    // id -> soft neon halo under the dot (canvas glow)
 const pads = new Map();     // id -> invisible click target
 const doms = new Map();     // id -> DOM marker (faulty only)
+const warns = new Map();    // id -> DOM sonar marker (predictive rApp warn)
 const vehs = new Map();     // team id -> marker
 const ringLines = new Map();
 const cutMarks = new Map();
 const collapseLines = [];
 let knownCuts = new Set();
 const nodeState = new Map();  // id -> last payload
+
+/* ------------------------------------------------------------ cadence */
+/* The server ticks at 1 Hz per unit of sim speed. Polling tracks that rate,
+ * and the CSS vehicle-glide duration is kept in sync so trucks interpolate
+ * at 60 FPS BETWEEN ticks instead of teleporting — the same client-side
+ * interpolation trick FlightRadar24 uses for 10-second transponder pings. */
+function pollInterval() {
+  return Math.min(2000, Math.max(300, Math.round(1000 / simSpeed)));
+}
+
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => { await poll(); schedulePoll(); },
+                         pollInterval());
+}
+
+function applySpeed(speed) {
+  simSpeed = Math.max(0.25, Number(speed) || 1);
+  document.documentElement.style.setProperty(
+    '--veh-glide', (pollInterval() / 1000).toFixed(2) + 's');
+  schedulePoll();
+}
 
 /* ------------------------------------------------------------ boot */
 async function boot() {
@@ -68,7 +94,7 @@ async function boot() {
     applyFull(first);
     lastTick = first.tick;
   } catch (e) { onScreenError('cannot fetch /api/data — ' + e); }
-  setInterval(poll, 2000);
+  applySpeed(simSpeed);        // starts the speed-tracked poll loop
   try { wireControls(); } catch (e) { onScreenError('controls failed: ' + e); }
 }
 
@@ -85,14 +111,17 @@ function initMap() {
     zoomControl: true, preferCanvas: false, attributionControl: false
   });
   try {
-       L.tileLayer(
-      'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-      { 
+    /* CartoDB "Dark Matter": charcoal-black basemap so the neon nodes,
+     * flowing fiber conduits and red alarms glow like a defense-grade
+     * command center instead of a daylight street map. */
+    L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+      {
         maxZoom: 19,
-        attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
+        subdomains: 'abcd',
+        attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
       }
     ).addTo(map);
-
   } catch (e) { onScreenError('basemap tiles failed (need internet): ' + e); }
   canvas = L.canvas({ padding: 0.5 });
   mapOk = true;
@@ -186,6 +215,14 @@ function upsertNode(n) {
 
   let dot = dots.get(n.id);
   if (!dot) {
+    // soft neon halo UNDER the dot — canvas cannot carry a CSS drop-shadow,
+    // so the glow is a second, larger translucent circle in the same colour
+    const halo = L.circleMarker([n.lat, n.lon], {
+      renderer: canvas, radius: 11, fillColor: colour, color: null,
+      weight: 0, fillOpacity: .13, interactive: false
+    }).addTo(map);
+    halos.set(n.id, halo);
+
     // visible marker: small, on canvas, non-interactive so clicks fall
     // through to the pad underneath
     dot = L.circleMarker([n.lat, n.lon], {
@@ -211,6 +248,8 @@ function upsertNode(n) {
 
   if (dot._st !== n.status) {
     dot.setStyle({ fillColor: colour, radius: healthy ? 6 : 9 });
+    const halo = halos.get(n.id);
+    if (halo) halo.setStyle({ fillColor: colour });
     dot._st = n.status;
     // promote faulty nodes to DOM so they can glow; demote when healed
     const existing = doms.get(n.id);
@@ -236,6 +275,25 @@ function upsertNode(n) {
         .className = `fault-dot ${crit ? 'crit-dot' : ''}`;
     }
   }
+
+  // Predictive sonar (Non-RT RIC): the PdM rApp's verdict for this node is
+  // at/above the served break-even while it is still in service. Amber
+  // radar ripple = "inside the 60-minute failure window" — shown BEFORE
+  // the tower turns red. The flag is computed server-side (I6).
+  const wEl = warns.get(n.id);
+  if (n.warn && healthy) {
+    if (!wEl) {
+      const m = L.marker([n.lat, n.lon], {
+        icon: L.divIcon({ className: '', html: '<div class="warn-dot"></div>',
+                          iconSize: [13, 13], iconAnchor: [6.5, 6.5] }),
+        interactive: false, zIndexOffset: 350
+      }).addTo(map);
+      warns.set(n.id, m);
+    }
+  } else if (wEl) {
+    map.removeLayer(wEl);
+    warns.delete(n.id);
+  }
 }
 
 /* Hit pads are 28 px wide but nodes average 25 px apart at zoom 12, so pads
@@ -254,7 +312,7 @@ function tipFor(id) {
   const n = nodeState.get(id);
   if (!n) return id;
   return `<b>${n.id}</b><br>${CFG.status_names[n.status]}<br>`
-       + `RSRP ${n.rsrp} dBm · ${n.temp}°C`;
+       + `RSRP ${n.rsrp} dBm · VSWR ${n.vswr} · PRB ${n.prb}% · ${n.temp}°C`;
 }
 
 /* ------------------------------------------------------------ rings */
@@ -264,17 +322,16 @@ function drawRings(rings) {
     let line = ringLines.get(r.id);
     const cut = !!r.cut;
     if (!line) {
-      line = L.polyline(r.path, {
-        renderer: canvas, color: '#2A3550', weight: 1.2,
-        opacity: .5, dashArray: '3 6', interactive: false
-      }).addTo(map);
+      // SVG, NOT canvas: CSS animates stroke-dashoffset, so the ring reads
+      // as a living conduit of light flowing toward the core EPC. On a cut
+      // the flow stops dead and the path turns bright red (.fiber-cut).
+      line = L.polyline(r.path, { className: 'fiber-line', interactive: false }).addTo(map);
       ringLines.set(r.id, line);
       line._cut = false;
     }
     if (line._cut !== cut) {
-      line.setStyle(cut
-        ? { color: CFG.status_colors[5], weight: 2.4, opacity: .95, dashArray: null }
-        : { color: '#2A3550', weight: 1.2, opacity: .5, dashArray: '3 6' });
+      const el = line.getElement();
+      if (el) el.setAttribute('class', cut ? 'fiber-cut' : 'fiber-line');
       line._cut = cut;
     }
     const existing = cutMarks.get(r.id);
@@ -394,13 +451,37 @@ function upsertTeam(t) {
 }
 
 /* ------------------------------------------------------------ panels */
+/* Smooth rolling odometer numbers (CountUp-style): KPIs tween over ~450 ms
+ * with an ease-out curve instead of snapping between ticks — the Stripe /
+ * modern-telecom-console feel. State per element id, driven by rAF at 60 FPS. */
+const _rollState = new Map();
+function rollNum(id, target, decimals, suffix) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const from = _rollState.has(id) ? _rollState.get(id) : target;
+  _rollState.set(id, target);
+  const fmt = v => v.toFixed(decimals) + suffix;
+  if (from === target) { el.textContent = fmt(target); return; }
+  const t0 = performance.now(), dur = 450;
+  const ease = x => 1 - Math.pow(1 - x, 3);
+  function frame(now) {
+    const p = Math.min(1, (now - t0) / dur);
+    el.textContent = fmt(p === 1 ? target : from + (target - from) * ease(p));
+    if (p < 1 && _rollState.get(id) === target) requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
 function renderKPIs(k) {
   setTxt('m-time', k.sim_time);
-  setTxt('m-avail', k.availability.toFixed(1) + '%');
-  setTxt('m-healthy', `${k.healthy}/${CFG.num_nodes}`);
-  setTxt('m-faults', k.congestion + k.overheat + k.rf + k.power + k.backhaul);
-  setTxt('m-teams', `${k.active_teams}/${CFG.num_teams}`);
-  setTxt('m-mttr', k.mttr_min ? k.mttr_min.toFixed(0) + 'm' : '—');
+  rollNum('m-avail', k.availability, 1, '%');
+  rollNum('m-healthy', k.healthy, 0, '/' + CFG.num_nodes);
+  rollNum('m-faults', k.congestion + k.overheat + k.rf + k.power + k.backhaul, 0, '');
+  // site-power facility alarms (OPEX story): ATS failures to crank + fuel thefts
+  rollNum('m-pwr', (k.ats_failures || 0) + (k.fuel_thefts || 0), 0, '');
+  rollNum('m-teams', k.active_teams, 0, '/' + CFG.num_teams);
+  if (k.mttr_min) rollNum('m-mttr', k.mttr_min, 0, 'm');
+  else setTxt('m-mttr', '—');
   const av = document.getElementById('m-avail');
   av.style.color = k.availability >= 98 ? 'var(--green)'
                  : k.availability >= 95 ? 'var(--amber)' : 'var(--red)';
@@ -421,10 +502,17 @@ function renderAggs(aggs) {
               : a.health >= 92 ? 'var(--amber)' : 'var(--red)';
     const wx = a.weather === 'Clear' ? '' :
       `<span class="agg-w">${a.weather.toUpperCase()} ${a.wind}km/h</span>`;
+    // site-power architecture chip: A grid+standby DG, B hybrid DG+battery
+    // bank, C off-grid solar PV — the OPEX story per district, served by
+    // /api/config (power_configs) and the agg payload (pwr)
+    const pwrName = (CFG.power_configs || {})[a.pwr] || '';
+    const pwr = a.pwr
+      ? `<span class="pwr-chip ${a.pwr}" title="${pwrName}">PWR ${a.pwr}</span>`
+      : '';
     return `<div class="agg">
       <div class="agg-top">
         <span class="agg-nm" style="color:${a.color}">${a.name}</span>
-        ${wx}<span class="ct" style="color:${col}">${a.health}%</span>
+        ${pwr}${wx}<span class="ct" style="color:${col}">${a.health}%</span>
       </div>
       <div class="agg-track">
         <div class="agg-fill" style="width:${a.health}%;background:${col}"></div>
@@ -451,6 +539,25 @@ function renderTeams(teams) {
      </div>`).join('');
 }
 
+/* Gauge row: label + mini colour-coded bar + value. Fill % and colour class
+ * come from the gauge specs SERVED by /api/config (GAUGE_SPECS) — the
+ * frontend applies the spec, it never invents thresholds (I5). */
+function gaugeCls(g, v) {
+  if (g.lower_bad) return v < g.bad ? 'bad' : v < g.warn ? 'warn' : 'ok';
+  return v > g.bad ? 'bad' : v > g.warn ? 'warn' : 'ok';
+}
+
+function grow(key, v, vText) {
+  const lab = (CFG.metric_labels || {})[key] || key.toUpperCase();
+  const g = (CFG.gauges || {})[key];
+  if (!g) return mrow(lab, vText, '');
+  const cls = gaugeCls(g, v);
+  const pct = Math.max(2, Math.min(100, (v - g.lo) / (g.hi - g.lo) * 100));
+  return `<div class="mrow"><span class="k">${lab}</span>`
+       + `<span class="gauge"><i class="${cls}" style="width:${pct.toFixed(0)}%"></i></span>`
+       + `<span class="v ${cls}">${vText}</span></div>`;
+}
+
 function renderInspector() {
   const box = document.getElementById('inspector');
   if (!selected || !nodeState.has(selected)) {
@@ -460,14 +567,9 @@ function renderInspector() {
   }
   const n = nodeState.get(selected);
   const c = CFG.status_colors[n.status];
-  const th = CFG.thresholds;
   const gen = ['Legacy', 'Standard', 'Modernised'][n.gen];
   const agg = CFG.agg_sites[n.agg];
-  const cls = (v, bad, warn, lower) => {
-    const b = lower ? v < bad : v > bad;
-    const w = lower ? v < warn : v > warn;
-    return b ? 'bad' : w ? 'warn' : 'ok';
-  };
+  const pwrName = (CFG.power_configs || {})[n.pwr] || '';
   box.className = '';
   box.innerHTML = `
     <div class="ins-hd">
@@ -479,35 +581,43 @@ function renderInspector() {
       <span class="tag">${agg.name}</span>
       <span class="tag">${gen}</span>
       <span class="tag">Ring ${n.ring}</span>
+      <span class="tag pwr" title="${pwrName}">PWR TYPE ${n.pwr}</span>
       ${n.critical ? '<span class="tag crit">⚠ CRITICAL SITE</span>' : ''}
+      ${n.warn ? '<span class="tag warn">◉ PdM rApp WARNING</span>' : ''}
+      ${n.ats ? '<span class="tag ats">⚡ ATS FAIL TO CRANK</span>' : ''}
       ${n.dispatched ? '<span class="tag">CREW EN ROUTE</span>' : ''}
       ${n.repairing ? '<span class="tag">UNDER REPAIR</span>' : ''}
     </div>
-    <div class="ins-sec"><h4>RADIO</h4><div class="ins-grid">
-      ${mrow('RSRP', n.rsrp + ' dBm', cls(n.rsrp, th.rsrp, th.rsrp + 8, true))}
-      ${mrow('SINR', n.sinr + ' dB', cls(n.sinr, 5, 10, true))}
-      ${mrow('S11', n.s11 + ' dB', cls(n.s11, th.s11, th.s11 - 4, false))}
-      ${mrow('Throughput', n.throughput + ' Mb', cls(n.throughput, 20, 60, true))}
-      ${mrow('Latency', n.latency + ' ms', cls(n.latency, 90, 50, false))}
-      ${mrow('Loss', n.loss + ' %', cls(n.loss, th.packet_loss, 5, false))}
+    <div class="ins-sec"><h4>RADIO — 3GPP PM COUNTERS</h4><div class="ins-grid">
+      ${grow('rsrp', n.rsrp, n.rsrp + ' dBm')}
+      ${grow('sinr', n.sinr, n.sinr + ' dB')}
+      ${grow('cqi', n.cqi, n.cqi + ' / 15')}
+      ${grow('vswr', n.vswr, n.vswr.toFixed(2) + ' : 1')}
+      ${grow('prb', n.prb, n.prb.toFixed(0) + ' %')}
+      ${grow('throughput', n.throughput, n.throughput + ' Mb')}
+      ${grow('loss', n.loss, n.loss + ' %')}
+      ${grow('latency', n.latency, n.latency + ' ms')}
     </div></div>
     <div class="ins-sec"><h4>HARDWARE</h4><div class="ins-grid">
-      ${mrow('Temp', n.temp + ' °C', cls(n.temp, th.temp, th.temp - 10, false))}
-      ${mrow('CPU', n.cpu + ' %', cls(n.cpu, th.cpu, 75, false))}
-      ${mrow('Dust', (n.dust * 100).toFixed(0) + ' %', cls(n.dust, .6, .3, false))}
-      ${mrow('Jitter', n.jitter + ' ms', cls(n.jitter, 7, 4, false))}
+      ${grow('temp', n.temp, n.temp + ' °C')}
+      ${grow('cpu', n.cpu, n.cpu + ' %')}
+      ${grow('dust', n.dust, (n.dust * 100).toFixed(0) + ' %')}
+      ${grow('jitter', n.jitter, n.jitter + ' ms')}
+      ${grow('s11', n.s11, n.s11 + ' dB')}
     </div></div>
-    <div class="ins-sec"><h4>POWER</h4><div class="ins-grid">
-      ${mrow('Source', n.power, n.power === 'Grid' ? 'ok' : 'warn')}
-      ${mrow('Voltage', n.voltage + ' V', cls(n.voltage, 11.2, 11.8, true))}
-      ${mrow('Battery', n.battery + ' %', cls(n.battery, 20, 50, true))}
+    <div class="ins-sec"><h4>SITE POWER — TYPE ${n.pwr} · ${pwrName.toUpperCase()}</h4><div class="ins-grid">
+      ${mrow('Power Source', n.power, n.power === 'Grid' ? 'ok' : 'warn')}
+      ${grow('voltage', n.voltage, n.voltage + ' V')}
+      ${grow('battery', n.battery, n.battery + ' %')}
+      ${grow('fuel', n.fuel, n.fuel + ' %')}
+      ${n.ats ? mrow('ATS', 'FAILED TO CRANK', 'bad') : ''}
     </div></div>
     ${n.status === 0 ? `
     <div class="ins-sec"><h4>INJECT FAULT (demo)</h4><div class="inject-btns">
-      <button class="inj" data-kind="1">Congestion</button>
-      <button class="inj" data-kind="2">Overheat</button>
-      <button class="inj" data-kind="3">RF</button>
-      <button class="inj" data-kind="4">Power</button>
+      <button class="inj" data-kind="1">${CFG.status_names[1]}</button>
+      <button class="inj" data-kind="2">${CFG.status_names[2]}</button>
+      <button class="inj" data-kind="3">${CFG.status_names[3]}</button>
+      <button class="inj" data-kind="4">${CFG.status_names[4]}</button>
     </div></div>` : ''}`;
   box.querySelectorAll('.inj').forEach(b => {
     b.onclick = async () => {
@@ -555,12 +665,19 @@ function renderAI(ai) {
                 : ai.ai_enabled ? '' : 'off';
   const modeTxt = ai.ai_mode === 'rules' ? 'RULES MODE'
                 : ai.ai_enabled ? 'AI ON' : 'AI OFF';
+  // O-RAN framing served by /api/config (rapp_roles): name what each model
+  // IS in Non-RT RIC language — RCA rApp, PdM rApp, A1 policy engine.
+  const roles = CFG.rapp_roles || {};
+  const roleLines = ['doctor', 'oracle', 'commander']
+    .filter(k => roles[k])
+    .map(k => `<span>▸ ${roles[k]}</span>`).join('');
   box.innerHTML = `
     <div class="ins-hd">
       <span style="font-size:9.5px;letter-spacing:1.3px;color:var(--dim);font-weight:700">
-        AI PERFORMANCE</span>
+        rApp PERFORMANCE</span>
       <span class="ai-mode ${modeCls}">${modeTxt}</span>
     </div>
+    ${roleLines ? `<div class="rapp-roles">${roleLines}</div>` : ''}
     <div class="pending-cta" style="margin-bottom:8px">
       <button class="pbtn approve" id="ai-toggle">
         ${ai.ai_enabled ? 'DISABLE AI' : 'ENABLE AI'}</button>
@@ -642,6 +759,9 @@ function wireControls() {
       document.querySelectorAll('.spd').forEach(x => x.classList.remove('on'));
       b.classList.add('on');
       await fetch(`/api/control/speed?value=${b.dataset.speed}`, { method: 'POST' });
+      // track the new cadence client-side: faster polls + a shorter vehicle
+      // glide so motion stays smooth at any sim speed
+      applySpeed(parseFloat(b.dataset.speed));
     };
   });
   document.querySelector('.spd').classList.add('on');
