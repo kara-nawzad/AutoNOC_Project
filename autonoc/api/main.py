@@ -27,10 +27,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from autonoc.engine import config as C
@@ -39,6 +39,8 @@ from autonoc.engine.engine import NOCEngine
 from . import presentation as P
 from . import schemas as S
 from .run_history import RunSummaryStore
+from .sessions import (Session, SessionRegistry, SessionCapacityError,
+                       COOKIE_NAME, InMemorySummaryStore)
 
 BASE_TICK_SECONDS = 1.0
 RUN_DAYS = 30
@@ -69,6 +71,41 @@ _run_error: str | None = None
 _history = P.History()
 _history.reset(engine)
 _summary_store = RunSummaryStore()
+
+# Session registry is deliberately process-local: Fly runs one shared-CPU
+# machine and live state is not checkpointed. Requests are activated one at a
+# time while rendering, so the legacy API implementation remains small while
+# each session retains its own engine, lock, history, controls and worker.
+_dispatch_lock = threading.RLock()
+_registry: SessionRegistry | None = None
+_shared_bundle = None
+
+def _make_session(token: str) -> Session:
+    e = NOCEngine(seed=_DEFAULT_SEED, ai_enabled=_DEFAULT_AI, horizon=RUN_TICKS)
+    h = P.History(); h.reset(e)
+    # Completed summaries remain durable, but each cookie gets its own small
+    # SQLite namespace; live engine state is never checkpointed or restored.
+    summary_root = Path(os.environ.get("AUTONOC_DATA_DIR", "./data")) / "sessions" / token
+    session = Session(token, e, threading.Lock(), 1.0, h, uuid.uuid4().hex,
+                      summary_store=RunSummaryStore(summary_root))
+    from autonoc.ai.serve import InferenceWorker
+    session.worker = InferenceWorker(e, session.lock,
+        auto_approve_seconds=_DEFAULT_AUTO_APPROVE,
+        run_id=session.run_id, bundle=_shared_bundle)
+    session.worker.start()
+    return session
+
+def _activate(s: Session) -> None:
+    global engine, _lock, _speed, _slow_ticks, _run_id, _reset_notice, _run_error, _history, _summary_store, worker
+    engine, _lock, _speed, _slow_ticks = s.engine, s.lock, s.speed, s.slow_ticks
+    _run_id, _reset_notice, _run_error, _history, worker = s.run_id, s.reset_notice, s.run_error, s.history, s.worker
+    _summary_store = s.summary_store or _summary_store
+
+def _deactivate(s: Session) -> None:
+    s.engine, s.speed, s.slow_ticks = engine, _speed, _slow_ticks
+    s.run_id, s.reset_notice, s.run_error, s.history, s.worker = _run_id, _reset_notice, _run_error, _history, worker
+    s.summary_store = _summary_store
+
 
 
 def _assert_current_run(run_id: str) -> None:
@@ -196,33 +233,37 @@ def _step_locked(automatic: bool = True, expected_run_id: str | None = None) -> 
 
 
 async def simulation_loop() -> None:
-    """The ONLY place engine.step() is called during normal operation."""
+    """Advance every active browser session without sharing simulation state."""
     while True:
         try:
-            # `_step_locked` rechecks Pause after acquiring the engine lock, so
-            # a racing pause cannot permit a boundary reset behind the user.
-            await asyncio.to_thread(_step_locked, True)
+            if _registry is not None:
+                for session in list(_registry._sessions.values()):
+                    with _dispatch_lock:
+                        _activate(session)
+                        await asyncio.to_thread(_step_locked, True)
+                        _deactivate(session)
         except asyncio.CancelledError:
             raise
-        except Exception:                      # never let the clock die
-            import traceback
-            traceback.print_exc()
-        with _lock:
-            interval = BASE_TICK_SECONDS / max(_speed, 0.1)
-        await asyncio.sleep(interval)
+        except Exception:
+            import traceback; traceback.print_exc()
+        with _dispatch_lock:
+            speeds = [s.speed for s in _registry._sessions.values()] if _registry else [_speed]
+        await asyncio.sleep(BASE_TICK_SECONDS / max(max(speeds, default=1.0), 0.1))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global worker
+    global worker, _registry, _shared_bundle
+    from autonoc.ai.serve import ModelBundle
+    _shared_bundle = ModelBundle()
+    _registry = SessionRegistry(_make_session,
+        max_sessions=int(os.environ.get("AUTONOC_MAX_SESSIONS", "8")),
+        idle_timeout=float(os.environ.get("AUTONOC_SESSION_IDLE_SECONDS", "1800")))
     task = asyncio.create_task(simulation_loop())
-    from autonoc.ai.serve import InferenceWorker
-    worker = InferenceWorker(engine, _lock,
-                             auto_approve_seconds=_DEFAULT_AUTO_APPROVE,
-                             run_id=_run_id)
-    worker.start()
     yield
-    worker.stop()
+    _registry.clear()
+    _registry = None
+    _shared_bundle = None
     task.cancel()
     try:
         await task
@@ -256,6 +297,25 @@ async def no_cache_dashboard(request, call_next):
         response.headers["Cache-Control"] = "no-store"
     return response
 
+
+@app.middleware("http")
+async def browser_session(request: Request, call_next):
+    """Bind this request to its server-issued high-entropy session cookie."""
+    if _registry is None:
+        return await call_next(request)
+    try:
+        session, created = _registry.get(request.cookies.get(COOKIE_NAME))
+    except SessionCapacityError as exc:
+        return JSONResponse({"detail": str(exc), "code": "session_capacity"}, status_code=503)
+    with _dispatch_lock:
+        _activate(session)
+        try:
+            response = await call_next(request)
+            if created:
+                response.set_cookie(COOKIE_NAME, session.token, httponly=True, samesite="lax", secure=False, max_age=int(_registry.idle_timeout))
+            return response
+        finally:
+            _deactivate(session)
 
 # ------------------------------------------------------------------ config
 @app.get("/api/config", response_model=S.ConfigResponse)
