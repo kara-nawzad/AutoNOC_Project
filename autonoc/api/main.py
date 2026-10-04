@@ -25,6 +25,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -66,6 +67,7 @@ _run_id = uuid.uuid4().hex
 _reset_notice = False
 _run_error: str | None = None
 _history = P.History()
+_history.reset(engine)
 _summary_store = RunSummaryStore()
 
 
@@ -132,6 +134,7 @@ def _reset_completed_run_locked() -> bool:
     try:
         summary = _run_summary(previous)
         candidate = _new_engine_like(previous, paused=keep_paused)
+        candidate_initial_sample = P.sample(candidate)
         _summary_store.save(previous_run_id, summary)
         next_run_id = uuid.uuid4().hex
     except Exception as exc:
@@ -149,7 +152,7 @@ def _reset_completed_run_locked() -> bool:
         worker.replace_engine(candidate, next_run_id)
     engine = candidate
     _run_id = next_run_id
-    _history.reset(candidate)
+    _history.reset(candidate, candidate_initial_sample)
     _reset_notice = True
     _run_error = None
     return True
@@ -394,6 +397,30 @@ async def get_delta(since: int = Query(0, ge=0)):
     with _lock:
         # Always mark complete snapshots so legacy consumers replace logs too.
         return _snapshot(resync=True)
+
+
+@app.get("/api/telemetry/history", response_model=S.TelemetryHistoryResponse)
+async def telemetry_history(
+    timeframe: Literal["30m", "24h", "7d"] = Query("30m"),
+    run_id: str = Query(..., min_length=1),
+):
+    """Read actual samples from the current simulation run, never a forecast.
+
+    30m/24h/7d refer to simulated network time. Samples are emitted at the
+    engine's five-minute tick resolution; a newly reset world therefore fills
+    longer windows as simulated time elapses.
+    """
+    minutes = {"30m": 30, "24h": 24 * 60, "7d": 7 * 24 * 60}[timeframe]
+    sample_count = minutes // C.TICK_MINUTES + 1
+    with _lock:
+        _assert_current_run(run_id)
+        current = P.sample(engine)
+        return {
+            "run_id": _run_id,
+            "timeframe": timeframe,
+            "tick_minutes": C.TICK_MINUTES,
+            "samples": _history.read_window(engine, current, sample_count),
+        }
 
 
 @app.get("/api/history", response_model=S.RunHistoryResponse)

@@ -33,6 +33,7 @@ import { AlertsSidebar, type Execute } from "./components/AlertsSidebar";
 import { AnalyticsRow } from "./components/AnalyticsRow";
 import { Inspector } from "./components/Inspector";
 import { HistoryModal } from "./components/HistoryModal";
+import { CounterfactualModal } from "./components/CounterfactualModal";
 import { SimControls, ScenarioModal } from "./components/SimControls";
 import { Dot, Modal, tone } from "./components/ui";
 import { api } from "./services/api";
@@ -45,6 +46,7 @@ type Dialog =
   | "search"
   | "settings"
   | "about"
+  | "impact"
   | null;
 
 export default function App() {
@@ -357,6 +359,7 @@ export default function App() {
                   setInjectNode(undefined);
                   setDialog("inject");
                 }}
+                onImpact={() => setDialog("impact")}
               />
             </div>
             {status !== "live" && (
@@ -402,6 +405,7 @@ export default function App() {
               </span>
             </div>
             <AnalyticsRow
+              key={data.run_id}
               data={data}
               config={config}
               onSelect={(id) => {
@@ -444,6 +448,15 @@ export default function App() {
         {dialog === "activity" && (
           <HistoryModal data={data} config={config} onClose={closeDialog} />
         )}
+        <AnimatePresence>
+          {dialog === "impact" && (
+            <CounterfactualModal
+              key="counterfactual-impact"
+              data={data}
+              onClose={closeDialog}
+            />
+          )}
+        </AnimatePresence>
         {dialog === "fleet" && (
           <Modal title="Maintenance fleet" onClose={closeDialog} wide>
             <p className="dialog-intro">
@@ -591,8 +604,9 @@ export default function App() {
             <p className="small-muted">
               This is a simulation, not a live operator network or certified
               O-RAN implementation. KPIs and model predictions come from the
-              Python backend. AI benefit and saved-time counters are modeled
-              estimates.
+              Python backend. The live ROI pill is an illustrative scenario
+              using disclosed assumptions; paired M7 cost units are not USD, and
+              the study does not show crew-hour savings.
             </p>
             <a
               href="/docs"

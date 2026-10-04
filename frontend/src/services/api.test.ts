@@ -45,6 +45,18 @@ describe("typed API transport", () => {
       "already faulty",
     );
   });
+  it("requests a same-run telemetry window without absolute URLs", async () => {
+    const fetcher = respond({
+      run_id: "run / token",
+      timeframe: "24h",
+      tick_minutes: 5,
+      samples: [],
+    });
+    await api.telemetryHistory("24h", "run / token");
+    expect(fetcher.mock.calls[0][0]).toBe(
+      "/api/telemetry/history?timeframe=24h&run_id=run+%2F+token",
+    );
+  });
   it("sends the server cursor unchanged", async () => {
     const fetcher = respond({
       tick: 42,

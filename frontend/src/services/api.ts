@@ -1,4 +1,11 @@
-import type { ActionResult, Config, RunHistory, Snapshot } from "../types/api";
+import type {
+  ActionResult,
+  Config,
+  RunHistory,
+  Snapshot,
+  TelemetryHistory,
+  TelemetryTimeframe,
+} from "../types/api";
 
 /** Relative paths deliberately use Vite's proxy / FastAPI's same origin. */
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -61,6 +68,10 @@ export const api = {
       await request<Snapshot>(`/api/delta?since=${cursor}`, { signal }),
     ),
   history: () => request<RunHistory>("/api/history"),
+  telemetryHistory: (timeframe: TelemetryTimeframe, runId: string) => {
+    const query = new URLSearchParams({ timeframe, run_id: runId });
+    return request<TelemetryHistory>(`/api/telemetry/history?${query}`);
+  },
   pause: (runId: string) => control("pause", runId),
   resume: (runId: string) => control("resume", runId),
   step: (runId: string) => control("step", runId),

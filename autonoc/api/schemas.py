@@ -139,6 +139,14 @@ class TelemetrySample(BaseModel):
     offline: int
 
 
+class TelemetryHistoryResponse(BaseModel):
+    """A bounded, current-run history window for the traffic inspector."""
+    run_id: str
+    timeframe: Literal["30m", "24h", "7d"]
+    tick_minutes: int
+    samples: list[TelemetrySample]
+
+
 class ActiveIncident(BaseModel):
     id: str
     node_id: Optional[str]

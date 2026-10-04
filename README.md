@@ -63,6 +63,30 @@ machine stopping. This storage is **summary history only**, not live-state
 checkpointing. A process restart may start a fresh Day 1; the app does not
 restore or resume the previous simulation state.
 
+### Executive impact and multi-timeframe telemetry
+
+The ROI pill beside the AI toggle shows a **live illustrative scenario**, not
+booked savings or a live paired AI/no-AI experiment. It applies the supplied
+planning assumptions (4.2 hours per pre-emption, 0.5 travel hours per false
+dispatch, $120 per downtime hour, and $180 per assumed net avoided truck roll).
+Those dollar rates and the one-roll-per-pre-emption relationship are not
+measured by the simulator. The impact modal keeps this estimate separate from
+the paired M7 study.
+
+M7 compares 30 matched seeds over 10 simulated days per seed. Its autonomous
+arm averaged 98.88% availability vs 98.75% for no-AI, avoided 5,664
+tower-minutes of aggregate downtime, and reduced the study's weighted cost
+proxy by 18.6%. That proxy is measured in tower-minute model units, **not USD**.
+Crew fleet occupation averaged 781.89 hours with autonomous AI vs 773.33 hours
+without it, so the study does **not** report crew-hour savings. These are study
+means, not monthly forecasts.
+
+The Traffic & quality selector reads actual server-side samples from the
+current simulation run. `30m`, `24h`, and `7d` are simulated-time windows at the
+engine's five-minute tick resolution; long windows fill as the run advances.
+The series is in-memory and resets with a new demo run; it is not a checkpoint
+or synthetic diurnal forecast.
+
 ---
 
 ## Table of Contents

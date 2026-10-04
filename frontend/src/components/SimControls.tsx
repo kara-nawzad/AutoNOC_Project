@@ -14,6 +14,7 @@ import type { Config, Snapshot } from "../types/api";
 import type { Execute } from "./AlertsSidebar";
 import { api } from "../services/api";
 import { Modal } from "./ui";
+import { RoiPill } from "./RoiPill";
 
 export function SimControls({
   data,
@@ -22,6 +23,7 @@ export function SimControls({
   execute,
   onCut,
   onInject,
+  onImpact,
 }: {
   data: Snapshot;
   config: Config;
@@ -29,6 +31,7 @@ export function SimControls({
   execute: Execute;
   onCut: () => void;
   onInject: () => void;
+  onImpact: () => void;
 }) {
   const [speedOpen, setSpeedOpen] = useState(false);
   const [draft, setDraft] = useState(data.control.speed);
@@ -135,6 +138,7 @@ export function SimControls({
         <Zap size={14} />
         <span>Inject fault</span>
       </button>
+      <RoiPill data={data} onOpen={onImpact} />
       <button
         className={`button ai-toggle ${data.ai.ai_enabled ? "enabled" : ""}`}
         disabled={busy}

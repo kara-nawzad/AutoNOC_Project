@@ -276,3 +276,47 @@ test("reconnect retains last telemetry and reduced motion stops decoration", asy
   await page.getByRole("button", { name: "Reconnect", exact: true }).click();
   await expect(page.locator(".connection-banner")).toHaveCount(0);
 });
+
+test("executive impact is transparent and long traffic windows use server samples", async ({
+  page,
+  request,
+}) => {
+  const { run_id: runId } = await (await request.get("/api/health")).json();
+  await request.post("/api/control/pause", { params: { run_id: runId } });
+  await request.post("/api/control/ai", {
+    params: { run_id: runId, enabled: false },
+  });
+
+  await page.goto("/");
+  const roiPill = page.locator(".roi-pill.inactive");
+  await expect(roiPill).toBeVisible();
+  await roiPill.click();
+  const impact = page.getByRole("dialog", {
+    name: /A1 Autonomous Intent — Economic & Operational Impact/,
+  });
+  await expect(impact).toBeVisible();
+  await expect(impact).toContainText("19,418 units lower");
+  await expect(impact).toContainText("8.6 h used · not saved");
+  await expect(impact).toContainText("it is not USD");
+  await page.keyboard.press("Escape");
+  await expect(impact).toHaveCount(0);
+
+  await page.getByRole("button", { name: "24h", exact: true }).click();
+  await expect(page.locator(".traffic-card .chart-axis")).toContainText(
+    "SIM MIN",
+  );
+  await expect(page.locator(".chart-provenance")).toContainText(
+    "Actual current-run samples",
+  );
+  await page.getByRole("button", { name: "7d", exact: true }).click();
+  await expect(page.locator(".traffic-card .chart-axis")).toContainText(
+    "SAMPLES",
+  );
+  const history = await (
+    await request.get(`/api/telemetry/history?timeframe=7d&run_id=${runId}`)
+  ).json();
+  expect(history.run_id).toBe(runId);
+  expect(history.samples.length).toBeGreaterThan(0);
+  const health = await (await request.get("/api/health")).json();
+  expect(history.samples.at(-1).tick).toBe(health.tick);
+});

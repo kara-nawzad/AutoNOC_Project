@@ -87,6 +87,40 @@ def test_history_is_bounded_and_reads_do_not_mutate(world):
     assert [r['tick'] for r in rows] == list(range(11, 41))
 
 
+def test_history_reset_starts_with_the_day_one_sample():
+    engine = NOCEngine(seed=7, horizon=600)
+    history = P.History()
+    history.reset(engine)
+    rows = history.read_window(engine, P.sample(engine), 7)
+    assert len(rows) == 1
+    assert rows[0]["tick"] == 0
+    assert rows[0]["sim_time"] == engine.sim_time
+
+
+def test_timeframe_history_uses_current_run_samples_and_exact_sim_window(world):
+    for _ in range(40):
+        M._step_locked()
+
+    client = TestClient(M.app)
+    params = {"run_id": M._run_id}
+    recent = client.get("/api/telemetry/history", params={**params, "timeframe": "30m"})
+    assert recent.status_code == 200
+    recent_body = recent.json()
+    assert recent_body["tick_minutes"] == C.TICK_MINUTES
+    assert [row["tick"] for row in recent_body["samples"]] == list(range(34, 41))
+
+    day = client.get("/api/telemetry/history", params={**params, "timeframe": "24h"})
+    week = client.get("/api/telemetry/history", params={**params, "timeframe": "7d"})
+    assert len(day.json()["samples"]) == len(week.json()["samples"]) == 40
+    assert day.json()["samples"][-1]["tick"] == week.json()["samples"][-1]["tick"] == 40
+    assert client.get(
+        "/api/telemetry/history", params={"timeframe": "7d", "run_id": "stale-run"}
+    ).status_code == 409
+    assert client.get(
+        "/api/telemetry/history", params={"timeframe": "5y", "run_id": M._run_id}
+    ).status_code == 422
+
+
 def test_dashboard_is_derived_from_engine(world):
     for _ in range(12):
         M._step_locked()

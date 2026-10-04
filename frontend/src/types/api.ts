@@ -214,6 +214,13 @@ export interface TelemetrySample {
   degraded: number;
   offline: number;
 }
+export type TelemetryTimeframe = "30m" | "24h" | "7d";
+export interface TelemetryHistory {
+  run_id: string;
+  timeframe: TelemetryTimeframe;
+  tick_minutes: number;
+  samples: TelemetrySample[];
+}
 export interface Incident {
   id: string;
   node_id: string | null;
