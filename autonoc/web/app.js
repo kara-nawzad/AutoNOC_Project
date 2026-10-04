@@ -15,7 +15,7 @@
 
 /* ------------------------------------------------------------ globals */
 let CFG = null, map = null, mapOk = false, canvas = null, svgRen = null;
-let selected = null, lastTick = 0, failures = 0, paused = false;
+let selected = null, lastTick = 0, failures = 0, paused = false, runId = '';
 let simSpeed = 1, pollTimer = null, cutCycle = 0;
 
 const nodeState = new Map();          // id -> latest node payload
@@ -76,6 +76,12 @@ function onScreenError(msg) {
   b.classList.remove('hidden');
   b.textContent = '⚠ ' + msg;
 }
+function sendControl(path) {
+  const separator = path.includes('?') ? '&' : '?';
+  return fetch(`${path}${separator}run_id=${encodeURIComponent(runId)}`, {
+    method: 'POST',
+  });
+}
 
 /* ------------------------------------------------------------ polling */
 /* client tracks the sim speed: faster sim => faster polls AND a shorter
@@ -107,6 +113,11 @@ function setConn(up) {
 }
 
 function applyFull(d) {
+  if (runId && d.run_id !== runId) {
+    selected = null;
+    nodeState.clear();
+  }
+  runId = d.run_id;
   d.nodes.forEach(n => { nodeState.set(n.id, n); upsertNode(n); });
   drawRings(d.rings);
   d.teams.forEach(upsertTeam);
@@ -472,8 +483,7 @@ function renderInspector() {
     </div></div>` : ''}`;
   box.querySelectorAll('.inj').forEach(b => {
     b.onclick = async () => {
-      await fetch(`/api/control/inject?node_id=${n.id}&kind=${b.dataset.kind}`,
-                  { method: 'POST' });
+      await sendControl(`/api/control/inject?node_id=${encodeURIComponent(n.id)}&kind=${b.dataset.kind}`);
     };
   });
 }
@@ -526,18 +536,16 @@ function renderAI(ai) {
      so hover/press states never flicker */
   if (box.__h !== html) { box.__h = html; box.innerHTML = html; }
   $('ai-toggle').onclick = async () => {
-    await fetch(`/api/control/ai?enabled=${ai.ai_enabled ? 'false' : 'true'}`,
-                { method: 'POST' });
+    await sendControl(`/api/control/ai?enabled=${ai.ai_enabled ? 'false' : 'true'}`);
   };
   $('ai-auto').onclick = async () => {
-    await fetch('/api/control/ai?enabled=true&auto_approve_seconds=10',
-                { method: 'POST' });
+    await sendControl('/api/control/ai?enabled=true&auto_approve_seconds=10');
   };
   box.querySelectorAll('[data-ap]').forEach(b => b.onclick = async () => {
-    await fetch(`/api/control/approve/${b.dataset.ap}`, { method: 'POST' });
+    await sendControl(`/api/control/approve/${b.dataset.ap}`);
   });
   box.querySelectorAll('[data-ve]').forEach(b => b.onclick = async () => {
-    await fetch(`/api/control/veto/${b.dataset.ve}`, { method: 'POST' });
+    await sendControl(`/api/control/veto/${b.dataset.ve}`);
   });
   const btn = $('btn-ai');
   btn.classList.toggle('armed', !!ai.ai_enabled);
@@ -547,21 +555,21 @@ function renderAI(ai) {
 function wireControls() {
   $('btn-pause').onclick = async () => {
     paused = !paused;
-    await fetch(`/api/control/${paused ? 'pause' : 'resume'}`, { method: 'POST' });
+    await sendControl(`/api/control/${paused ? 'pause' : 'resume'}`);
     $('btn-pause').textContent = paused ? '▶' : '❚❚';
   };
   document.querySelectorAll('.spd').forEach(b => {
     b.onclick = async () => {
       document.querySelectorAll('.spd').forEach(x => x.classList.remove('on'));
       b.classList.add('on');
-      await fetch(`/api/control/speed?value=${b.dataset.speed}`, { method: 'POST' });
+      await sendControl(`/api/control/speed?value=${b.dataset.speed}`);
       applySpeed(parseFloat(b.dataset.speed));
     };
   });
   $('btn-cut').onclick = () => doCut();
   $('btn-ai').onclick = async () => {
     const on = $('btn-ai').classList.contains('armed');
-    await fetch(`/api/control/ai?enabled=${on ? 'false' : 'true'}`, { method: 'POST' });
+    await sendControl(`/api/control/ai?enabled=${on ? 'false' : 'true'}`);
   };
   $('bell').onclick = () => { $('feed').scrollTop = 0; };
   document.querySelectorAll('.dtab[data-tab]').forEach(b =>
@@ -576,7 +584,7 @@ function doCut() {
   const ring = selected && nodeState.has(selected)
     ? nodeState.get(selected).ring : (cutCycle % 10);
   cutCycle++;
-  fetch(`/api/control/cut-fiber?ring_id=${ring}&isolate=true`, { method: 'POST' });
+  sendControl(`/api/control/cut-fiber?ring_id=${ring}&isolate=true`);
 }
 
 function navCmd(n) {
@@ -596,7 +604,7 @@ const COMMANDS = [
   { ic: '✂', t: 'Cut fiber ring (Act 3 demo)', f: doCut },
   { ic: '✦', t: 'Toggle AI (Commander / A1 policy)', f: () => $('btn-ai').click() },
   { ic: '⏱', t: 'Arm auto-approve for 10 s', f: () =>
-      fetch('/api/control/ai?enabled=true&auto_approve_seconds=10', { method: 'POST' }) },
+      sendControl('/api/control/ai?enabled=true&auto_approve_seconds=10') },
   { ic: '❚❚', t: 'Pause / resume simulation', f: () => $('btn-pause').click() },
   { ic: '◉', t: 'Fly to weakest district', f: () => {
       let worst = null;

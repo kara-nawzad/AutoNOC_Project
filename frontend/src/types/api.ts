@@ -249,8 +249,34 @@ export interface Dashboard {
   fuel_thefts: number;
   fleet: Record<FleetState, number>;
 }
+export interface RunSummary {
+  completed_at: string;
+  simulated_days: number;
+  completed_sim_time: string;
+  seed: number;
+  availability: number;
+  injected: number;
+  masked: number;
+  repairs: number;
+  mttr_min: number;
+  ats_failures: number;
+  fuel_thefts: number;
+  active_incidents: number;
+  ai_enabled: boolean;
+  ai_mode: string;
+  pre_empted: number;
+  acted_upon: number;
+  false_dispatches: number;
+  crew_hours_saved: number;
+  precision: number | null;
+}
+export interface RunHistory {
+  summaries: RunSummary[];
+}
 export interface Snapshot {
   run_id: string;
+  reset_notice: boolean;
+  run_error: string | null;
   tick: number;
   resync: boolean;
   kpis: Kpis;
@@ -271,6 +297,7 @@ export interface Snapshot {
 export interface ActionResult {
   ok?: boolean;
   reason?: string;
+  error?: string;
   late?: boolean;
   [key: string]: unknown;
 }

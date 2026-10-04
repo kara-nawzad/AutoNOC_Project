@@ -45,6 +45,24 @@ See the [frontend guide](frontend/README.md) for contracts, testing, controls an
 honest simulator limitations. The earlier vanilla frontend is kept only as an
 unbuilt-checkout fallback.
 
+### Repeating demo and completed-run history
+
+The server advances the same seeded network through 30 simulated days, saves an
+aggregate completion summary, then initializes a clean Day 1 world using the
+same seed and network layout. Pause prevents an automatic boundary reset; a
+manual step can cross it while keeping the new world paused. Speed, AI policy,
+AI enablement and the auto-approval preference are retained. Each run has an
+internal identifier so stale browser controls and late inference results cannot
+modify the next world.
+
+Recent aggregate summaries are stored in SQLite under `AUTONOC_DATA_DIR`
+(default: `./data`) and appear in History with their completion date and time.
+On Fly, `fly.toml` mounts a small persistent volume at `/data`; the existing
+workflow keeps one machine in the `ams` primary region and disables automatic
+machine stopping. This storage is **summary history only**, not live-state
+checkpointing. A process restart may start a fresh Day 1; the app does not
+restore or resume the previous simulation state.
+
 ---
 
 ## Table of Contents
@@ -256,17 +274,21 @@ Base URL: `http://localhost:8000`
 |---|---|---|
 | `GET` | `/` | Serves the Leaflet dashboard |
 | `GET` | `/api/config` | Single source of truth (status names/colors, thresholds, map) |
-| `GET` | `/api/delta?since=<tick>` | Cursor-based state deltas (read-only & idempotent) |
-| `GET` | `/api/health` | Status: tick, seed, ai_enabled, ai_policy, paused, speed |
-| `POST` | `/api/control/pause` | Pause the simulation |
-| `POST` | `/api/control/resume` | Resume the simulation |
-| `POST` | `/api/control/step` | Advance one tick |
-| `POST` | `/api/control/speed?value=1.0` | Set speed (0.25–10) |
-| `POST` | `/api/control/inject?node_id&kind` | Inject a fault (1–5) on a node |
-| `POST` | `/api/control/cut-fiber?ring_id&isolate` | Trigger the Act 3 double-cut scenario |
-| `POST` | `/api/control/ai?enabled&auto_approve_seconds` | Toggle the Commander |
-| `POST` | `/api/control/approve/{action_id}` | Approve a Commander action |
-| `POST` | `/api/control/veto/{action_id}` | Veto a Commander action |
+| `GET` | `/api/delta?since=<tick>` | Read-only snapshot; includes the current `run_id` |
+| `GET` | `/api/history` | Recent durable completion summaries (not checkpoints) |
+| `GET` | `/api/health` | Status: tick, run_id, seed, ai_enabled, paused, speed |
+| `POST` | `/api/control/pause?run_id=<id>` | Pause the simulation |
+| `POST` | `/api/control/resume?run_id=<id>` | Resume the simulation |
+| `POST` | `/api/control/step?run_id=<id>` | Advance one tick (pause first) |
+| `POST` | `/api/control/speed?value=1.0&run_id=<id>` | Set speed (0.25–10) |
+| `POST` | `/api/control/inject?node_id&kind&run_id=<id>` | Inject a fault (1–5) on a node |
+| `POST` | `/api/control/cut-fiber?ring_id&isolate&run_id=<id>` | Trigger the Act 3 double-cut scenario |
+| `POST` | `/api/control/ai?enabled&auto_approve_seconds&run_id=<id>` | Toggle the Commander |
+| `POST` | `/api/control/approve/{action_id}?run_id=<id>` | Approve a Commander action |
+| `POST` | `/api/control/veto/{action_id}?run_id=<id>` | Veto a Commander action |
+
+All control requests must echo the current `run_id` from `/api/delta`;
+controls from an older world are rejected with `409 Conflict`.
 
 Interactive docs are served by FastAPI at `http://localhost:8000/docs`.
 
@@ -286,7 +308,7 @@ Interactive docs are served by FastAPI at `http://localhost:8000/docs`.
 python -m pytest tests/ -q
 ```
 
-100 Python tests across the suite (five data-dependent tests skip without generated datasets), plus frontend unit/browser tests:
+109 Python tests across the suite (five data-dependent tests skip without generated datasets), plus frontend unit/browser tests:
 
 - **11 invariant guards** (`test_invariants.py`) — pure-engine, determinism,
   banned imports via AST, single-source-of-truth, no-preview leakage
@@ -299,15 +321,14 @@ python -m pytest tests/ -q
 - **7 counterfactual tests** (`test_counterfactual.py`)
 - **6 polish tests** (`test_polish.py`) — demo and documentation checks
 - **13 dashboard contract tests** (`test_dashboard.py`) — snapshots, paused writes, history, controls and presentation
+- **9 lifecycle tests** (`test_run_lifecycle.py`) — Day 30 reset, pause/manual-step boundaries, stale controls and inference, persistent-summary durability/failure
 
-The complete build/test/deploy workflow is saved in
-[`docs/ci-proposed.yml`](docs/ci-proposed.yml). It builds and tests the React app,
-runs the Python suite and browser tests, and gates Fly.io deployment on a
-successful main-branch push. **It is not active yet:** the GitHub connection
-could not update workflow files. The existing
-[active workflow](.github/workflows/ci.yml) remains deploy-only and also runs on
-pull requests. To activate the proposed version, replace the active file with
-`docs/ci-proposed.yml` using GitHub's web editor or workflow-write permission.
+The active [GitHub Actions workflow](.github/workflows/ci.yml) deploys the
+existing Fly app on pushes to `main` and pull requests targeting `main`. It is
+deploy-focused rather than a CI test gate: the frontend, Python, and browser
+tests listed above should be run before merging. After deployment the workflow
+keeps one started machine in the `ams` primary region and removes extra app
+machines.
 
 ---
 

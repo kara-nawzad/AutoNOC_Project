@@ -111,6 +111,11 @@ class History:
         self.rows = deque(maxlen=30)
         self.owner = None
 
+    def reset(self, engine):
+        """Start a clean chart series for a newly initialized world."""
+        self.rows.clear()
+        self.owner = engine
+
     def record(self, engine):
         if self.owner is not engine:
             self.rows.clear()
