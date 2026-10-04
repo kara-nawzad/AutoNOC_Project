@@ -157,7 +157,7 @@ class InferenceWorker(threading.Thread):
 
     def __init__(self, engine, lock, models_dir: str = "models",
                  auto_approve_seconds: int = C.AUTO_APPROVE_SECONDS,
-                 run_id: str | None = None):
+                 run_id: str | None = None, bundle=None):
         super().__init__(daemon=True, name="autonoc-inference")
         global MODEL_DIR
         MODEL_DIR = pathlib.Path(models_dir)
@@ -170,7 +170,7 @@ class InferenceWorker(threading.Thread):
         self._created: dict[int, float] = {}
         self._last_error: str | None = None
         # loads happen here so a missing file degrades once, quietly
-        self.bundle = ModelBundle()
+        self.bundle = bundle if bundle is not None else ModelBundle()
         self._mode = "ml" if self.bundle.complete else "rules"
 
     # ------------------------------------------------------------ lifecycle

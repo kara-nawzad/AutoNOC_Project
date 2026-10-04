@@ -54,6 +54,8 @@ assumption-based dollar scenarios.
 - An ML pipeline with separate diagnosis and prediction roles, plus an expected-value policy layer.
 - A four-arm, matched-seed study that exposes both operational outcomes and a clearly labeled
   model-cost proxy.
+- Isolated, anonymous browser sessions: each visitor receives a server-issued cookie and an
+  independent in-memory simulation, controls, AI state, approvals, telemetry, and run history.
 - A MapLibre vector basemap using OpenFreeMap-hosted OpenMapTiles/OpenStreetMap data, rendered
   beneath Leaflet overlays. A schematic fallback is available when the street layer cannot load;
   online street tiles require network access.
@@ -198,6 +200,16 @@ an actual incident saved $684.
   advances.
 - The simulation runs for 30 simulated days, then records an aggregate completion summary and starts
   a fresh Day 1 world using the same seed and network layout. This is a new run, not a continuation.
+- Each browser gets an `autonoc_session` HTTP-only, high-entropy cookie. The server resolves that
+  cookie to a process-local session; the browser never supplies a session identifier. Engines,
+  speed, pause state, AI settings, fault/fiber controls, approvals, current-run telemetry, and
+  displayed history are session-scoped, and run IDs are checked only within that session.
+- Live sessions are intentionally in memory and are not restored after a restart. By default the
+  single Fly machine accepts **8 active sessions** and expires sessions after **30 minutes idle**.
+  Configure `AUTONOC_MAX_SESSIONS` and `AUTONOC_SESSION_IDLE_SECONDS` for a deployment. A full
+  registry returns HTTP 503 with `code: session_capacity`; closing idle dashboards frees capacity.
+  The model bundle is loaded once per process and shared read-only by inference workers. These
+  limits keep the design appropriate for the existing 1 shared CPU / 1 GB Fly machine.
 - Completed-run History is separate: the API stores aggregate completion summaries in SQLite under
   `AUTONOC_DATA_DIR` (default `./data`). On Fly.io, `/data` is mounted on the app's persistent
   volume.
