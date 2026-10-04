@@ -26,16 +26,16 @@ jobs:
           fi
           flyctl scale count app=1 --region ams --yes
           machines="$(flyctl machines list --app autonoc-project --json)"
-          keep_id="$(jq -r '[.[] | select(.region == \"ams\" and .state == \"started\")][0].id // empty' <<< \"$machines\")"
-          if [[ -z \"$keep_id\" ]]; then
-            echo \"No started simulation machine found in primary region ams.\" >&2
+          keep_id="$(jq -r '[.[] | select(.region == "ams" and .state == "started")][0].id // empty' <<< "$machines")"
+          if [[ -z "$keep_id" ]]; then
+            echo "No started simulation machine found in primary region ams." >&2
             exit 1
           fi
           while IFS= read -r machine_id; do
-            [[ -z \"$machine_id\" ]] && continue
-            echo \"Removing extra machine $machine_id before deploy (keeping $keep_id in ams).\"
-            flyctl machine destroy \"$machine_id\" --app autonoc-project --force
-          done < <(jq -r --arg keep \"$keep_id\" '.[] | select(.id != $keep) | .id' <<< \"$machines\")
+            [[ -z "$machine_id" ]] && continue
+            echo "Removing extra machine $machine_id before deploy (keeping $keep_id in ams)."
+            flyctl machine destroy "$machine_id" --app autonoc-project --force
+          done < <(jq -r --arg keep "$keep_id" '.[] | select(.id != $keep) | .id' <<< "$machines")
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
