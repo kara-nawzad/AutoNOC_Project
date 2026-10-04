@@ -156,12 +156,14 @@ class InferenceWorker(threading.Thread):
     fallback and an auto-approve timer for demo mode."""
 
     def __init__(self, engine, lock, models_dir: str = "models",
-                 auto_approve_seconds: int = C.AUTO_APPROVE_SECONDS):
+                 auto_approve_seconds: int = C.AUTO_APPROVE_SECONDS,
+                 run_id: str | None = None):
         super().__init__(daemon=True, name="autonoc-inference")
         global MODEL_DIR
         MODEL_DIR = pathlib.Path(models_dir)
         self.engine = engine
         self.lock = lock
+        self.run_id = run_id
         self._stop = threading.Event()
         self._last_cycle = -1
         self.auto_approve_seconds = float(auto_approve_seconds)
@@ -187,29 +189,51 @@ class InferenceWorker(threading.Thread):
         return max(0.0, self.auto_approve_seconds
                    - (time.monotonic() - created))
 
+    # ------------------------------------------------------------ lifecycle
+    def replace_engine(self, engine, run_id: str) -> None:
+        """Bind to a clean run and invalidate pending timers / old inference.
+
+        The API calls this while holding `self.lock`, the same lock used by
+        `_process_cycle` to capture and verify the engine/run pair.
+        """
+        self.engine = engine
+        self.run_id = run_id
+        self._last_cycle = -1
+        self._created.clear()
+
     # ------------------------------------------------------------ main loop
     def run(self) -> None:
         while not self._stop.wait(0.25):
             try:
-                with self.lock:
-                    tick = self.engine.tick
-                    enabled = bool(self.engine.ai_enabled)
-                if not enabled:
-                    continue                       # no verdicts while AI is off
-                if tick == self._last_cycle:
-                    continue
-                if tick % C.AI_INFERENCE_EVERY_TICKS != 0:
-                    continue
-                self._last_cycle = tick
-                verdicts = self._score_batch()
-                with self.lock:
-                    self.engine.ai_verdicts = verdicts
-                    self.engine.ai_mode = self._mode
-                    self._track_pending()
-                self._settle_auto_approve()
+                self._process_cycle()
             except Exception:
                 self._last_error = traceback.format_exc(limit=3)
                 print(self._last_error)
+
+    def _process_cycle(self) -> bool:
+        """Infer one batch, publishing only if its originating run still owns it."""
+        with self.lock:
+            source = self.engine
+            source_run_id = self.run_id
+            tick = source.tick
+            if not source.ai_enabled:
+                return False
+            if tick == self._last_cycle or tick % C.AI_INFERENCE_EVERY_TICKS != 0:
+                return False
+            self._last_cycle = tick
+
+        verdicts = self._score_batch(source)
+        with self.lock:
+            # A reset may have happened while model inference was off-lock.
+            # Also reject a result if AI was disabled during inference.
+            if (self.engine is not source or self.run_id != source_run_id
+                    or not source.ai_enabled):
+                return False
+            source.ai_verdicts = verdicts
+            source.ai_mode = self._mode
+            self._track_pending()
+            self._settle_auto_approve_locked()
+        return True
 
     def _track_pending(self) -> None:
         """Remember when each pending action was created (wall clock)."""
@@ -217,25 +241,26 @@ class InferenceWorker(threading.Thread):
         for a in self.engine.pending_actions:
             self._created.setdefault(int(a["action_id"]), now)
 
-    def _settle_auto_approve(self) -> None:
+    def _settle_auto_approve_locked(self) -> None:
+        """Auto-approve current-run actions; caller owns `self.lock`."""
         if self.auto_approve_seconds <= 0:
             return
         now = time.monotonic()
-        with self.lock:
-            for a in list(self.engine.pending_actions):
-                created = self._created.get(int(a["action_id"]))
-                if created is None or now - created < self.auto_approve_seconds:
-                    continue
-                self.engine.approve_action(int(a["action_id"]))
-                self.engine.log(
-                    f"AI: action {a['action_id']} auto-approved "
-                    f"after {(now - created):.0f}s (demo mode)", "INFO")
+        for a in list(self.engine.pending_actions):
+            created = self._created.get(int(a["action_id"]))
+            if created is None or now - created < self.auto_approve_seconds:
+                continue
+            self.engine.approve_action(int(a["action_id"]))
+            self.engine.log(
+                f"AI: action {a['action_id']} auto-approved "
+                f"after {(now - created):.0f}s (demo mode)", "INFO")
 
     # ------------------------------------------------------------ scoring
-    def _score_batch(self) -> dict[str, dict]:
+    def _score_batch(self, engine=None) -> dict[str, dict]:
         """Snapshot under the lock, infer outside it, return verdicts."""
+        source = engine or self.engine
         with self.lock:
-            snapshot = _collect_inputs(self.engine, self.bundle)
+            snapshot = _collect_inputs(source, self.bundle)
         ids, feats, windows, statuses, crit = snapshot
         p_fault = _doctor_scores(ids, feats, self.bundle)
         p_fail = _oracle_scores(ids, windows, self.bundle)

@@ -3,7 +3,7 @@
 # ============================================================
 #  The server runs in the background and keeps running even if
 #  you close every PowerShell window. Nothing you type can stop
-#  it. To stop it later, run Stop-Demo.ps1.
+#  it. To stop it later, double-click Stop-Demo.bat in the project folder.
 #
 #  RUN (in any PowerShell, from anywhere):
 #     Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
@@ -76,5 +76,5 @@ Write-Host "  If it does not, open http://127.0.0.1:8000 yourself."
 Write-Host "  IMPORTANT: if the page still looks empty, press Ctrl+F5 once"
 Write-Host "  to force the browser to drop its old cached copy."
 Write-Host "  You can close ALL PowerShell windows now - the server"
-Write-Host "  keeps running. To stop it:  .\Stop-Demo.ps1"
+Write-Host "  keeps running. To stop it, double-click Stop-Demo.bat in the project folder."
 Write-Host "======================================================"

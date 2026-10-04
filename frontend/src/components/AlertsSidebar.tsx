@@ -15,7 +15,11 @@ import { api } from "../services/api";
 import type { Command, Config, Snapshot } from "../types/api";
 import { Badge, Dot, PanelHeading, tone } from "./ui";
 
-export type Execute = (command: Command, label: string) => Promise<boolean>;
+export type Execute = (
+  command: Command,
+  label: string,
+  runId: string,
+) => Promise<boolean>;
 export function AlertsSidebar({
   data,
   config,
@@ -39,8 +43,10 @@ export function AlertsSidebar({
   async function decide(id: number, approve: boolean) {
     setHidden((old) => new Set(old).add(id));
     const ok = await execute(
-      () => (approve ? api.approve(id) : api.veto(id)),
+      () =>
+        approve ? api.approve(id, data.run_id) : api.veto(id, data.run_id),
       approve ? "Pre-dispatch approved" : "Recommendation vetoed",
+      data.run_id,
     );
     if (!ok)
       setHidden((old) => {

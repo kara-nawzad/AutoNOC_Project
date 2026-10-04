@@ -139,6 +139,14 @@ class TelemetrySample(BaseModel):
     offline: int
 
 
+class TelemetryHistoryResponse(BaseModel):
+    """A bounded, current-run history window for the traffic inspector."""
+    run_id: str
+    timeframe: Literal["30m", "24h", "7d"]
+    tick_minutes: int
+    samples: list[TelemetrySample]
+
+
 class ActiveIncident(BaseModel):
     id: str
     node_id: Optional[str]
@@ -165,15 +173,45 @@ class DashboardModel(BaseModel):
     fleet: dict[str, int]
 
 
+class RunSummary(BaseModel):
+    """Aggregate record for one completed 30-day demo; never a checkpoint."""
+    completed_at: str
+    simulated_days: int = Field(ge=1)
+    completed_sim_time: str
+    seed: int
+    availability: float = Field(ge=0.0, le=100.0)
+    injected: int = Field(ge=0)
+    masked: int = Field(ge=0)
+    repairs: int = Field(ge=0)
+    mttr_min: float = Field(ge=0.0)
+    ats_failures: int = Field(ge=0)
+    fuel_thefts: int = Field(ge=0)
+    active_incidents: int = Field(ge=0)
+    ai_enabled: bool
+    ai_mode: str
+    pre_empted: int = Field(ge=0)
+    acted_upon: int = Field(ge=0)
+    false_dispatches: int = Field(ge=0)
+    crew_hours_saved: float = Field(ge=0.0)
+    precision: Optional[float] = None
+
+
+class RunHistoryResponse(BaseModel):
+    summaries: list[RunSummary]
+
+
 class DeltaResponse(BaseModel):
     """Bounded current snapshot at the legacy tick-cursor endpoint.
 
     resync=True tells consumers to replace nodes, teams and recent logs. This
     avoids dirty-flag races without changing the simulation's tick semantics.
+    run_id changes whenever the 30-day world is safely reset.
     """
     tick: int
     resync: bool
     run_id: str
+    reset_notice: bool = False
+    run_error: Optional[str] = None
     control: dict
     dashboard: DashboardModel
     kpis: KPIModel

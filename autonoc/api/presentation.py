@@ -106,10 +106,21 @@ def sample(engine):
 
 
 class History:
-    """Bounded server-tick history; record only under the API engine lock."""
+    """Bounded in-memory telemetry for at most seven simulated days.
+
+    Samples are recorded only under the API engine lock. The regular dashboard
+    remains a 30-sample payload; longer windows are fetched on demand so the
+    1-second control-plane poll does not grow with the selected chart range.
+    """
     def __init__(self):
-        self.rows = deque(maxlen=30)
+        self.rows = deque(maxlen=7 * C.TICKS_PER_DAY + 1)
         self.owner = None
+
+    def reset(self, engine, initial_sample=None):
+        """Start a clean chart series with its initial Day 1 sample."""
+        self.rows.clear()
+        self.owner = engine
+        self.rows.append(initial_sample if initial_sample is not None else sample(engine))
 
     def record(self, engine):
         if self.owner is not engine:
@@ -121,10 +132,25 @@ class History:
         else:
             self.rows.append(row)
 
-    def read(self, engine, current):
+    def read_window(self, engine, current, sample_count: int):
+        """Return at most ``sample_count`` points and replace the live tick.
+
+        A read never records or advances simulation state. Replacing the final
+        tick with ``current`` also reflects same-tick controls immediately.
+        """
+        if sample_count < 1:
+            return []
         rows = list(self.rows) if self.owner is engine else []
-        # Same-tick manual actions must appear immediately without GET mutation.
-        return [r for r in rows if r["tick"] < engine.tick][-29:] + [current]
+        previous = [row for row in rows if row["tick"] < engine.tick]
+        prior_count = sample_count - 1
+        if prior_count:
+            previous = previous[-prior_count:]
+        else:
+            previous = []
+        return previous + [current]
+
+    def read(self, engine, current):
+        return self.read_window(engine, current, 30)
 
 
 def dashboard(engine, history):

@@ -14,6 +14,7 @@ import type { Config, Snapshot } from "../types/api";
 import type { Execute } from "./AlertsSidebar";
 import { api } from "../services/api";
 import { Modal } from "./ui";
+import { RoiPill } from "./RoiPill";
 
 export function SimControls({
   data,
@@ -22,6 +23,7 @@ export function SimControls({
   execute,
   onCut,
   onInject,
+  onImpact,
 }: {
   data: Snapshot;
   config: Config;
@@ -29,6 +31,7 @@ export function SimControls({
   execute: Execute;
   onCut: () => void;
   onInject: () => void;
+  onImpact: () => void;
 }) {
   const [speedOpen, setSpeedOpen] = useState(false);
   const [draft, setDraft] = useState(data.control.speed);
@@ -45,8 +48,12 @@ export function SimControls({
           title={data.control.paused ? "Resume" : "Pause"}
           onClick={() =>
             void execute(
-              data.control.paused ? api.resume : api.pause,
+              () =>
+                data.control.paused
+                  ? api.resume(data.run_id)
+                  : api.pause(data.run_id),
               data.control.paused ? "Simulation resumed" : "Simulation paused",
+              data.run_id,
             )
           }
         >
@@ -57,7 +64,13 @@ export function SimControls({
           disabled={busy || !data.control.paused}
           aria-label="Advance one simulation tick"
           title="Single step (pause first)"
-          onClick={() => void execute(api.step, "Advanced one simulation tick")}
+          onClick={() =>
+            void execute(
+              () => api.step(data.run_id),
+              "Advanced one simulation tick",
+              data.run_id,
+            )
+          }
         >
           <StepForward size={15} />
         </button>
@@ -95,8 +108,9 @@ export function SimControls({
               disabled={busy}
               onClick={() =>
                 void execute(
-                  () => api.speed(draft),
+                  () => api.speed(draft, data.run_id),
                   `Speed set to ${draft}×`,
+                  data.run_id,
                 ).then((ok) => {
                   if (ok) setSpeedOpen(false);
                 })
@@ -124,13 +138,15 @@ export function SimControls({
         <Zap size={14} />
         <span>Inject fault</span>
       </button>
+      <RoiPill data={data} onOpen={onImpact} />
       <button
         className={`button ai-toggle ${data.ai.ai_enabled ? "enabled" : ""}`}
         disabled={busy}
         onClick={() =>
           void execute(
-            () => api.ai(!data.ai.ai_enabled),
+            () => api.ai(!data.ai.ai_enabled, data.run_id),
             data.ai.ai_enabled ? "AI disabled" : "AI enabled",
+            data.run_id,
           )
         }
         aria-pressed={data.ai.ai_enabled}
@@ -171,10 +187,14 @@ export function ScenarioModal({
   async function submit() {
     setPending(true);
     const ok = await execute(
-      () => (type === "cut" ? api.cut(ring) : api.inject(node, kind)),
+      () =>
+        type === "cut"
+          ? api.cut(ring, data.run_id)
+          : api.inject(node, kind, data.run_id),
       type === "cut"
         ? `Double cut requested on ring ${ring}`
         : `Fault injected on ${node}`,
+      data.run_id,
     );
     setPending(false);
     if (ok) onClose();

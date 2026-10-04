@@ -14,7 +14,12 @@ test("live controls, map inspector, scenarios, and mobile layout", async ({
     )
       errors.push(msg.text());
   });
-  await request.post("/api/control/pause");
+  const { run_id: initialRunId } = await (
+    await request.get("/api/health")
+  ).json();
+  await request.post("/api/control/pause", {
+    params: { run_id: initialRunId },
+  });
   await page.goto("/");
   await expect(
     page.getByRole("heading", { name: "Network overview" }),
@@ -94,6 +99,110 @@ test("live controls, map inspector, scenarios, and mobile layout", async ({
   expect(errors).toEqual([]);
 });
 
+test("run reset shows Day 1, clears stale UI state, and histories completions by time", async ({
+  page,
+  request,
+}) => {
+  const baseline = await (await request.get("/api/data")).json();
+  const healthy = baseline.nodes.find(
+    (node: { status: number }) => node.status === 0,
+  );
+  if (!healthy) throw new Error("test world has no healthy site to select");
+  let frame = {
+    ...baseline,
+    run_id: "browser-run-before-reset",
+    reset_notice: false,
+    run_error: null,
+    tick: 0,
+    kpis: { ...baseline.kpis, tick: 0, sim_time: "D1 00:00" },
+    dashboard: {
+      ...baseline.dashboard,
+      current: { ...baseline.dashboard.current, tick: 0, sim_time: "D1 00:00" },
+      history: [
+        { ...baseline.dashboard.current, tick: 0, sim_time: "D1 00:00" },
+      ],
+    },
+    logs: [],
+    control: { ...baseline.control, paused: true },
+  };
+  const completedAt = "2026-10-04T08:15:00Z";
+  await page.route("**/api/delta?*", (route) => route.fulfill({ json: frame }));
+  await page.route("**/api/history", (route) =>
+    route.fulfill({
+      json: {
+        summaries: [
+          {
+            completed_at: completedAt,
+            simulated_days: 30,
+            completed_sim_time: "D30 23:55",
+            seed: 42,
+            availability: 98.25,
+            injected: 23,
+            masked: 4,
+            repairs: 21,
+            mttr_min: 45.5,
+            ats_failures: 1,
+            fuel_thefts: 2,
+            active_incidents: 3,
+            ai_enabled: true,
+            ai_mode: "ml",
+            pre_empted: 6,
+            acted_upon: 8,
+            false_dispatches: 1,
+            crew_hours_saved: 5.2,
+            precision: 0.86,
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/");
+  await expect(page.locator(".sim-clock")).toContainText("D1 00:00");
+  await expect(page.locator(".sim-clock")).not.toContainText("SEED");
+
+  await page.getByRole("button", { name: "Find a site..." }).click();
+  await page
+    .getByRole("textbox", { name: "Search site ID or district" })
+    .fill(healthy.id);
+  await page.locator(".search-results button").first().click();
+  await expect(
+    page.getByRole("complementary", { name: `Inspector for ${healthy.id}` }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Inject fault on this site" }).click();
+  await expect(page.locator("dialog")).toBeVisible();
+
+  frame = {
+    ...frame,
+    run_id: "browser-run-after-reset",
+    reset_notice: true,
+    tick: 0,
+    kpis: { ...frame.kpis, tick: 0, sim_time: "D1 00:00" },
+    dashboard: {
+      ...frame.dashboard,
+      current: { ...frame.dashboard.current, tick: 0, sim_time: "D1 00:00" },
+      history: [{ ...frame.dashboard.current, tick: 0, sim_time: "D1 00:00" }],
+    },
+    logs: [],
+  };
+  await expect(page.getByRole("status")).toContainText(
+    "Demo restarted · Day 1",
+  );
+  await expect(page.locator("dialog")).toHaveCount(0);
+  await expect(
+    page.getByRole("complementary", { name: `Inspector for ${healthy.id}` }),
+  ).toHaveCount(0);
+  await expect(page.locator(".sim-clock")).toContainText("D1 00:00");
+
+  await page
+    .getByRole("button", { name: "Open network event history" })
+    .click();
+  await page.getByRole("tab", { name: "Completed demos" }).click();
+  const completion = page.locator(".run-summary-card time");
+  await expect(completion).toHaveAttribute("datetime", completedAt);
+  await expect(page.getByText("30 simulated days")).toBeVisible();
+  expect(await page.locator("body").innerText()).not.toMatch(/Cycle\s+\d+/i);
+});
+
 test("approval failure rolls back optimistic removal; veto removes the intent", async ({
   page,
   request,
@@ -142,7 +251,12 @@ test("reconnect retains last telemetry and reduced motion stops decoration", asy
   page,
   request,
 }) => {
-  await request.post("/api/control/pause");
+  const { run_id: currentRunId } = await (
+    await request.get("/api/health")
+  ).json();
+  await request.post("/api/control/pause", {
+    params: { run_id: currentRunId },
+  });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
   await expect(page.locator(".kpi-card")).toHaveCount(6);
@@ -161,4 +275,48 @@ test("reconnect retains last telemetry and reduced motion stops decoration", asy
   await page.unroute("**/api/delta?*");
   await page.getByRole("button", { name: "Reconnect", exact: true }).click();
   await expect(page.locator(".connection-banner")).toHaveCount(0);
+});
+
+test("executive impact is transparent and long traffic windows use server samples", async ({
+  page,
+  request,
+}) => {
+  const { run_id: runId } = await (await request.get("/api/health")).json();
+  await request.post("/api/control/pause", { params: { run_id: runId } });
+  await request.post("/api/control/ai", {
+    params: { run_id: runId, enabled: false },
+  });
+
+  await page.goto("/");
+  const roiPill = page.locator(".roi-pill.inactive");
+  await expect(roiPill).toBeVisible();
+  await roiPill.click();
+  const impact = page.getByRole("dialog", {
+    name: /A1 Autonomous Intent — Economic & Operational Impact/,
+  });
+  await expect(impact).toBeVisible();
+  await expect(impact).toContainText("19,418 units lower");
+  await expect(impact).toContainText("8.6 h used · not saved");
+  await expect(impact).toContainText("it is not USD");
+  await page.keyboard.press("Escape");
+  await expect(impact).toHaveCount(0);
+
+  await page.getByRole("button", { name: "24h", exact: true }).click();
+  await expect(page.locator(".traffic-card .chart-axis")).toContainText(
+    "SIM MIN",
+  );
+  await expect(page.locator(".chart-provenance")).toContainText(
+    "Actual current-run samples",
+  );
+  await page.getByRole("button", { name: "7d", exact: true }).click();
+  await expect(page.locator(".traffic-card .chart-axis")).toContainText(
+    "SAMPLES",
+  );
+  const history = await (
+    await request.get(`/api/telemetry/history?timeframe=7d&run_id=${runId}`)
+  ).json();
+  expect(history.run_id).toBe(runId);
+  expect(history.samples.length).toBeGreaterThan(0);
+  const health = await (await request.get("/api/health")).json();
+  expect(history.samples.at(-1).tick).toBe(health.tick);
 });

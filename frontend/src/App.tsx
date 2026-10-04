@@ -32,8 +32,10 @@ import { NetworkMap } from "./components/NetworkMap";
 import { AlertsSidebar, type Execute } from "./components/AlertsSidebar";
 import { AnalyticsRow } from "./components/AnalyticsRow";
 import { Inspector } from "./components/Inspector";
+import { HistoryModal } from "./components/HistoryModal";
+import { CounterfactualModal } from "./components/CounterfactualModal";
 import { SimControls, ScenarioModal } from "./components/SimControls";
-import { Badge, Dot, Modal, tone } from "./components/ui";
+import { Dot, Modal, tone } from "./components/ui";
 import { api } from "./services/api";
 
 type Dialog =
@@ -44,10 +46,14 @@ type Dialog =
   | "search"
   | "settings"
   | "about"
+  | "impact"
   | null;
 
 export default function App() {
   const { config, data, status, error, refresh } = useTelemetry();
+  const activeRunId = useRef<string | null>(null);
+  const observedRunId = useRef<string | null>(null);
+  if (data?.run_id) activeRunId.current = data.run_id;
   const [selected, setSelected] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [injectNode, setInjectNode] = useState<string>();
@@ -63,8 +69,31 @@ export default function App() {
   }, []);
   const closeDialog = useCallback(() => setDialog(null), []);
   useEffect(() => {
+    if (!data) return;
+    const previousRunId = observedRunId.current;
+    observedRunId.current = data.run_id;
+    if (previousRunId === null) {
+      if (data.reset_notice)
+        setToast({ text: "Demo restarted · Day 1", error: false });
+      return;
+    }
+    if (previousRunId === data.run_id) return;
+
+    // A successful reset replaces the world; no old modal, search target,
+    // inspector selection, optimistic approval, or command toast may survive.
     setSelected(null);
-  }, [data?.run_id]);
+    setDialog(null);
+    setInjectNode(undefined);
+    setQuery("");
+    setSection("overview");
+    busyRef.current = false;
+    setBusy(false);
+    setToast(
+      data.reset_notice
+        ? { text: "Demo restarted · Day 1", error: false }
+        : null,
+    );
+  }, [data]);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -84,12 +113,21 @@ export default function App() {
     }
   }, [toast]);
   const execute: Execute = useCallback(
-    async (command, label) => {
-      if (busyRef.current) return false;
+    async (command, label, commandRunId) => {
+      if (
+        busyRef.current ||
+        activeRunId.current === null ||
+        commandRunId !== activeRunId.current
+      )
+        return false;
       busyRef.current = true;
       setBusy(true);
       try {
         const result = await command();
+        if (activeRunId.current !== commandRunId) {
+          refresh();
+          return false;
+        }
         setToast({
           text: result.late
             ? "Approval arrived after failure; reactive dispatch is handling the site."
@@ -99,6 +137,10 @@ export default function App() {
         refresh();
         return true;
       } catch (err) {
+        if (activeRunId.current !== commandRunId) {
+          refresh();
+          return false;
+        }
         setToast({
           text:
             err instanceof Error
@@ -109,8 +151,10 @@ export default function App() {
         refresh();
         return false;
       } finally {
-        busyRef.current = false;
-        setBusy(false);
+        if (activeRunId.current === commandRunId) {
+          busyRef.current = false;
+          setBusy(false);
+        }
       }
     },
     [refresh],
@@ -293,7 +337,6 @@ export default function App() {
                 <div className="sim-clock">
                   <Clock3 size={13} />
                   <span className="mono">{data.kpis.sim_time}</span>
-                  <span className="seed">SEED {data.control.seed}</span>
                 </div>
               </div>
             </div>
@@ -316,6 +359,7 @@ export default function App() {
                   setInjectNode(undefined);
                   setDialog("inject");
                 }}
+                onImpact={() => setDialog("impact")}
               />
             </div>
             {status !== "live" && (
@@ -328,6 +372,12 @@ export default function App() {
                 <button onClick={refresh}>Reconnect</button>
               </div>
             )}
+            {data.run_error && (
+              <div className="run-error-banner" role="alert">
+                <X size={16} />
+                <span>{data.run_error}</span>
+              </div>
+            )}
             <KpiGrid data={data} config={config} />
             <div className="primary-grid">
               <NetworkMap
@@ -337,6 +387,7 @@ export default function App() {
                 onSelect={selectNode}
               />
               <AlertsSidebar
+                key={data.run_id}
                 config={config}
                 data={data}
                 onSelect={selectNode}
@@ -354,6 +405,7 @@ export default function App() {
               </span>
             </div>
             <AnalyticsRow
+              key={data.run_id}
               data={data}
               config={config}
               onSelect={(id) => {
@@ -365,9 +417,7 @@ export default function App() {
             <footer className="app-footer">
               <span>
                 <Dot color={status === "live" ? p.healthy : p.warning} /> Engine{" "}
-                {status === "live" ? "connected" : "disconnected"}{" "}
-                <span>·</span>{" "}
-                <span className="mono">TICK {data.tick.toLocaleString()}</span>
+                {status === "live" ? "connected" : "disconnected"}
               </span>
               <span>
                 Deterministic world. Predictive operations.
@@ -396,32 +446,17 @@ export default function App() {
           />
         )}
         {dialog === "activity" && (
-          <Modal title="Network event history" onClose={closeDialog} wide>
-            <p className="dialog-intro">
-              Latest {data.logs.length} retained events · engine time. Cleared
-              alarms remain here for context.
-            </p>
-            <div className="event-history">
-              {[...data.logs].reverse().map((entry, i) => (
-                <div
-                  className="history-row"
-                  key={`${entry.tick}-${i}-${entry.message}`}
-                >
-                  <span className="mono">{entry.time}</span>
-                  <Badge config={config} severity={entry.severity} />
-                  <p>{entry.message}</p>
-                </div>
-              ))}
-              {!data.logs.length && (
-                <div className="empty-state">
-                  <ShieldCheck size={24} />
-                  <strong>No events yet</strong>
-                  <span>Engine events will appear here.</span>
-                </div>
-              )}
-            </div>
-          </Modal>
+          <HistoryModal data={data} config={config} onClose={closeDialog} />
         )}
+        <AnimatePresence>
+          {dialog === "impact" && (
+            <CounterfactualModal
+              key="counterfactual-impact"
+              data={data}
+              onClose={closeDialog}
+            />
+          )}
+        </AnimatePresence>
         {dialog === "fleet" && (
           <Modal title="Maintenance fleet" onClose={closeDialog} wide>
             <p className="dialog-intro">
@@ -515,9 +550,11 @@ export default function App() {
                     () =>
                       api.ai(
                         true,
+                        data.run_id,
                         data.control.auto_approve_seconds > 0 ? 0 : 10,
                       ),
                     "Approval policy updated",
+                    data.run_id,
                   )
                 }
               >
@@ -567,8 +604,9 @@ export default function App() {
             <p className="small-muted">
               This is a simulation, not a live operator network or certified
               O-RAN implementation. KPIs and model predictions come from the
-              Python backend. AI benefit and saved-time counters are modeled
-              estimates.
+              Python backend. The live ROI pill is an illustrative scenario
+              using disclosed assumptions; paired M7 cost units are not USD, and
+              the study does not show crew-hour savings.
             </p>
             <a
               href="/docs"

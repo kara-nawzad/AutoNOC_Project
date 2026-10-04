@@ -23,7 +23,9 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,8 +38,11 @@ from autonoc.engine.engine import NOCEngine
 
 from . import presentation as P
 from . import schemas as S
+from .run_history import RunSummaryStore
 
 BASE_TICK_SECONDS = 1.0
+RUN_DAYS = 30
+RUN_TICKS = C.TICKS_PER_DAY * RUN_DAYS
 
 # M8 — demo support. The "Storm over Goizha" demo runs a cast seed:
 #   $env:AUTONOC_SEED=131; python -m uvicorn autonoc.api.main:app
@@ -47,7 +52,7 @@ _DEFAULT_AI = os.environ.get("AUTONOC_AI", "0") == "1"
 _DEFAULT_AUTO_APPROVE = float(os.environ.get("AUTONOC_AUTO_APPROVE", "0"))
 
 engine = NOCEngine(seed=_DEFAULT_SEED, ai_enabled=_DEFAULT_AI,
-                   horizon=C.TICKS_PER_DAY * 30)
+                   horizon=RUN_TICKS)
 _lock = threading.Lock()
 _speed = 1.0
 _slow_ticks = 0
@@ -56,36 +61,155 @@ _slow_ticks = 0
 # None until then so module import never starts threads.
 worker = None
 
-# A process/run identity lets clients discard history after a server restart.
+# The identifier changes on every successful Day 30 reset and on process
+# start. Every browser control is bound to the identifier it was rendered for.
 _run_id = uuid.uuid4().hex
+_reset_notice = False
+_run_error: str | None = None
 _history = P.History()
+_history.reset(engine)
+_summary_store = RunSummaryStore()
 
 
-def _step_locked() -> None:
-    """Runs off the event loop thread; holds the lock while mutating."""
+def _assert_current_run(run_id: str) -> None:
+    """Reject commands created against a world that has already been reset."""
+    if run_id != _run_id:
+        raise HTTPException(
+            status_code=409,
+            detail="This control belongs to an earlier demo. Refresh the dashboard and try again.",
+        )
+
+
+def _run_summary(source) -> dict:
+    """Capture aggregate results only; no simulation state is checkpointed."""
+    kpis = source.kpis()
+    ai = source.ai_payload()
+    return {
+        "completed_at": datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        "simulated_days": RUN_DAYS,
+        "completed_sim_time": source.sim_time,
+        "seed": source.seed,
+        "availability": kpis["availability"],
+        "injected": kpis["injected"],
+        "masked": kpis["masked"],
+        "repairs": kpis["repairs"],
+        "mttr_min": kpis["mttr_min"],
+        "ats_failures": kpis["ats_failures"],
+        "fuel_thefts": kpis["fuel_thefts"],
+        "active_incidents": len(P.incidents(source)),
+        "ai_enabled": bool(source.ai_enabled),
+        "ai_mode": source.ai_mode,
+        "pre_empted": int(ai["pre_empted"]),
+        "acted_upon": int(ai["acted_upon"]),
+        "false_dispatches": int(ai["false_dispatches"]),
+        "crew_hours_saved": float(ai["crew_hours_saved"]),
+        "precision": ai["precision"],
+    }
+
+
+def _new_engine_like(source, paused: bool):
+    """Build the next deterministic world without mutating the current one."""
+    fresh = NOCEngine(
+        seed=source.seed,
+        ai_enabled=source.ai_enabled,
+        horizon=source.horizon,
+    )
+    fresh.ai_policy = source.ai_policy
+    fresh.ai_mode = source.ai_mode
+    fresh.paused = paused
+    return fresh
+
+
+def _reset_completed_run_locked() -> bool:
+    """Atomically persist the summary and replace a completed world.
+
+    The caller owns `_lock`. Candidate initialization and durable summary save
+    both happen before publishing the candidate. Any exception leaves the
+    completed world untouched except that it is paused and reports the error.
+    """
+    global engine, _run_id, _reset_notice, _run_error
+    previous = engine
+    previous_run_id = _run_id
+    keep_paused = previous.paused
+    try:
+        summary = _run_summary(previous)
+        candidate = _new_engine_like(previous, paused=keep_paused)
+        candidate_initial_sample = P.sample(candidate)
+        _summary_store.save(previous_run_id, summary)
+        next_run_id = uuid.uuid4().hex
+    except Exception as exc:
+        previous.paused = True
+        detail = str(exc).strip() or type(exc).__name__
+        _run_error = (
+            "Demo restart failed. The completed world was preserved and paused. "
+            f"{detail[:300]}"
+        )
+        return False
+
+    # The worker snapshots the engine and run id together under the same lock;
+    # results produced from the previous world are rejected when it resumes.
+    if worker is not None:
+        worker.replace_engine(candidate, next_run_id)
+    engine = candidate
+    _run_id = next_run_id
+    _history.reset(candidate, candidate_initial_sample)
+    _reset_notice = True
+    _run_error = None
+    return True
+
+
+def _step_locked(automatic: bool = True, expected_run_id: str | None = None) -> dict:
+    """Advance one server tick, or safely complete/reset at the run boundary."""
     global _slow_ticks
     t0 = time.perf_counter()
     with _lock:
-        engine.step()
-        _history.record(engine)
+        if expected_run_id is not None:
+            _assert_current_run(expected_run_id)
+        if automatic and engine.paused:
+            return {"advanced": False, "tick": engine.tick, "run_id": _run_id}
+        if not automatic and not engine.paused:
+            raise HTTPException(status_code=409, detail="Pause the simulation before stepping.")
+
+        # tick 8639 is D30 23:55. The next 5-minute transition would display
+        # Day 31, so complete the 30-day summary and reset instead of exposing
+        # a Day 31 frame. A paused/manual step takes this same path and stays
+        # paused in the new world.
+        if engine.tick >= engine.horizon - 1:
+            reset = _reset_completed_run_locked()
+            result = {
+                "advanced": False,
+                "reset": reset,
+                "tick": engine.tick,
+                "run_id": _run_id,
+                "paused": engine.paused,
+                "error": _run_error,
+            }
+        else:
+            engine.step()
+            _history.record(engine)
+            result = {"advanced": True, "tick": engine.tick, "run_id": _run_id}
+
     dt = (time.perf_counter() - t0) * 1000
     if dt > 100.0:
         _slow_ticks += 1
+    return result
 
 
 async def simulation_loop() -> None:
     """The ONLY place engine.step() is called during normal operation."""
     while True:
         try:
-            if not engine.paused:
-                # off the event loop so a slow tick never stalls HTTP
-                await asyncio.to_thread(_step_locked)
+            # `_step_locked` rechecks Pause after acquiring the engine lock, so
+            # a racing pause cannot permit a boundary reset behind the user.
+            await asyncio.to_thread(_step_locked, True)
         except asyncio.CancelledError:
             raise
         except Exception:                      # never let the clock die
             import traceback
             traceback.print_exc()
-        await asyncio.sleep(BASE_TICK_SECONDS / max(_speed, 0.1))
+        with _lock:
+            interval = BASE_TICK_SECONDS / max(_speed, 0.1)
+        await asyncio.sleep(interval)
 
 
 @asynccontextmanager
@@ -94,7 +218,8 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(simulation_loop())
     from autonoc.ai.serve import InferenceWorker
     worker = InferenceWorker(engine, _lock,
-                             auto_approve_seconds=_DEFAULT_AUTO_APPROVE)
+                             auto_approve_seconds=_DEFAULT_AUTO_APPROVE,
+                             run_id=_run_id)
     worker.start()
     yield
     worker.stop()
@@ -241,7 +366,8 @@ def _ai_payload() -> dict:
 def _snapshot(resync: bool) -> dict:
     return {
         "tick": engine.tick, "resync": resync, "kpis": engine.kpis(),
-        "run_id": _run_id,
+        "run_id": _run_id, "reset_notice": _reset_notice,
+        "run_error": _run_error,
         "control": {"paused": engine.paused, "speed": _speed, "seed": engine.seed,
                     "auto_approve_seconds": worker.auto_approve_seconds if worker else 0},
         "dashboard": P.dashboard(engine, _history),
@@ -273,46 +399,95 @@ async def get_delta(since: int = Query(0, ge=0)):
         return _snapshot(resync=True)
 
 
+@app.get("/api/telemetry/history", response_model=S.TelemetryHistoryResponse)
+async def telemetry_history(
+    timeframe: Literal["30m", "24h", "7d"] = Query("30m"),
+    run_id: str = Query(..., min_length=1),
+):
+    """Read actual samples from the current simulation run, never a forecast.
+
+    30m/24h/7d refer to simulated network time. Samples are emitted at the
+    engine's five-minute tick resolution; a newly reset world therefore fills
+    longer windows as simulated time elapses.
+    """
+    minutes = {"30m": 30, "24h": 24 * 60, "7d": 7 * 24 * 60}[timeframe]
+    sample_count = minutes // C.TICK_MINUTES + 1
+    with _lock:
+        _assert_current_run(run_id)
+        current = P.sample(engine)
+        return {
+            "run_id": _run_id,
+            "timeframe": timeframe,
+            "tick_minutes": C.TICK_MINUTES,
+            "samples": _history.read_window(engine, current, sample_count),
+        }
+
+
+@app.get("/api/history", response_model=S.RunHistoryResponse)
+async def run_history():
+    """Recent durable completion summaries, not resumable simulation state."""
+    try:
+        return {"summaries": _summary_store.recent()}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Run history is unavailable: {str(exc).strip() or type(exc).__name__}",
+        ) from exc
+
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "tick": engine.tick, "paused": engine.paused,
-            "speed": _speed, "slow_ticks": _slow_ticks,
-            "seed": engine.seed, "ai_enabled": engine.ai_enabled,
-            "ai_policy": engine.ai_policy}
+    with _lock:
+        return {"status": "ok", "tick": engine.tick, "paused": engine.paused,
+                "speed": _speed, "slow_ticks": _slow_ticks,
+                "seed": engine.seed, "run_id": _run_id,
+                "run_error": _run_error, "ai_enabled": engine.ai_enabled,
+                "ai_policy": engine.ai_policy}
 
 
 # ------------------------------------------------------------------ control
 @app.post("/api/control/pause")
-async def pause():
+async def pause(run_id: str = Query(..., min_length=1)):
     with _lock:
+        _assert_current_run(run_id)
         engine.paused = True
-    return {"paused": True}
+    return {"paused": True, "run_id": run_id}
 
 
 @app.post("/api/control/resume")
-async def resume():
+async def resume(run_id: str = Query(..., min_length=1)):
     with _lock:
+        _assert_current_run(run_id)
         engine.paused = False
-    return {"paused": False}
+    return {"paused": False, "run_id": run_id}
 
 
 @app.post("/api/control/step")
-async def step_once():
-    await asyncio.to_thread(_step_locked)
-    return {"tick": engine.tick}
+async def step_once(run_id: str = Query(..., min_length=1)):
+    return await asyncio.to_thread(_step_locked, False, run_id)
 
 
 @app.post("/api/control/speed")
-async def set_speed(value: float = Query(1.0, ge=0.25, le=10.0)):
+async def set_speed(
+    value: float = Query(1.0, ge=0.25, le=10.0),
+    run_id: str = Query(..., min_length=1),
+):
     global _speed
-    _speed = value
-    return {"speed": _speed}
+    with _lock:
+        _assert_current_run(run_id)
+        _speed = value
+        return {"speed": _speed, "run_id": run_id}
 
 
 @app.post("/api/control/inject")
-async def inject(node_id: str, kind: int = Query(3, ge=1, le=5)):
+async def inject(
+    node_id: str,
+    kind: int = Query(3, ge=1, le=5),
+    run_id: str = Query(..., min_length=1),
+):
     from autonoc.engine import faults as F
     with _lock:
+        _assert_current_run(run_id)
         node = engine.net.by_id.get(node_id)
         if node is None:
             raise HTTPException(404, f"unknown node {node_id}")
@@ -330,39 +505,48 @@ async def inject(node_id: str, kind: int = Query(3, ge=1, le=5)):
 
 
 @app.post("/api/control/cut-fiber")
-async def cut_fiber(ring_id: int = Query(0, ge=0, le=20),
-                    isolate: bool = Query(True),
-                    cause: str = Query("construction", pattern="^(construction|storm|equipment)$")):
+async def cut_fiber(
+    ring_id: int = Query(0, ge=0, le=20),
+    isolate: bool = Query(True),
+    cause: str = Query("construction", pattern="^(construction|storm|equipment)$"),
+    run_id: str = Query(..., min_length=1),
+):
     """Trigger the Act 3 scenario: a double cut isolates a whole ring."""
     with _lock:
+        _assert_current_run(run_id)
         return engine.cut_fiber(ring_id, isolate=isolate, cause=cause)
 
 
 # ------------------------------------------------------------------ commander (M6)
 @app.post("/api/control/ai")
-async def set_ai(enabled: bool = Query(True),
-                 auto_approve_seconds: float = Query(C.AUTO_APPROVE_SECONDS,
-                                                     ge=0, le=600)):
+async def set_ai(
+    enabled: bool = Query(True),
+    auto_approve_seconds: float = Query(C.AUTO_APPROVE_SECONDS, ge=0, le=600),
+    run_id: str = Query(..., min_length=1),
+):
     """Toggle the Commander and (for demos) auto-approve-after-N-seconds."""
     with _lock:
+        _assert_current_run(run_id)
         engine.ai_enabled = enabled
         if not enabled:
             engine.ai_verdicts = {}
             engine.ai_mode = "off"
-    if worker is not None:
-        worker.set_auto_approve(auto_approve_seconds)
+        if worker is not None:
+            worker.set_auto_approve(auto_approve_seconds)
     return {"ai_enabled": enabled, "auto_approve_seconds": auto_approve_seconds}
 
 
 @app.post("/api/control/approve/{action_id}")
-async def approve(action_id: int):
+async def approve(action_id: int, run_id: str = Query(..., min_length=1)):
     with _lock:
+        _assert_current_run(run_id)
         return engine.approve_action(action_id)
 
 
 @app.post("/api/control/veto/{action_id}")
-async def veto(action_id: int):
+async def veto(action_id: int, run_id: str = Query(..., min_length=1)):
     with _lock:
+        _assert_current_run(run_id)
         return engine.veto_action(action_id)
 
 

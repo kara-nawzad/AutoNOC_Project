@@ -1,32 +1,52 @@
-# ===================== Python =====================
+# Python bytecode and native build products
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.egg-info/
 .python-version
 
-# Environment / secrets
+# Environments and local secrets
 .env
 .env.*
 !.env.example
-
-# ===================== Virtualenv =====================
+.envrc
 venv/
 .venv/
 env/
 ENV/
 
-# ===================== Test / tooling caches =====================
+# Test, coverage, and Python tooling caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 coverage.xml
+coverage/
 htmlcov/
 .tox/
 .nox/
 
-# ===================== IDE / OS =====================
+# Node, Vite, and package-manager output
+**/node_modules/
+/frontend/dist/
+/frontend/.vite/
+/frontend/.npm/
+.npm/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tsbuildinfo
+
+# Generated frontend bundle (built by Vite/Docker; never source)
+/autonoc/web/dist/
+
+# Browser-test output
+/frontend/test-results/
+/frontend/playwright-report/
+
+# IDE and operating-system files
 .vscode/
 .idea/
 *.swp
@@ -34,22 +54,11 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# ===================== Runtime =====================
+# Runtime logs and local process output
 *.log
 *.err
 
-# ===================== Data (regenerable, too large for GitHub) =====================
+# Regenerable datasets / local application data.
+# Trained artifacts under models/ (including the required .npz scalers) are
+# intentionally committed for reproducible local and Fly.io startup.
 /data/
-data/*.npz
-
-# ===================== Models =====================
-# Trained artifacts under models/ ARE committed: a fresh clone (and the
-# fly.io build from the GitHub source) must boot in ML mode, not rules mode.
-# Everything else stays out of git — data/ is regenerable from the engine.
-
-# React command center (reproducible from frontend/package-lock.json)
-node_modules/
-/autonoc/web/dist/
-/frontend/test-results/
-/frontend/playwright-report/
-*.tsbuildinfo

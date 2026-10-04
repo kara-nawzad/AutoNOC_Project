@@ -17,7 +17,53 @@ jobs:
       - name: Setup Flyctl
         uses: superfly/flyctl-actions/setup-flyctl@master
 
+      - name: Prepare persistent summary volume and one primary machine
+        run: |
+          set -euo pipefail
+          volumes="$(flyctl volumes list --app autonoc-project --json)"
+          if ! jq -e 'any(.[]; .name == "autonoc_data" and .region == "ams" and .state != "destroyed")' <<< "$volumes" >/dev/null; then
+            flyctl volumes create autonoc_data --app autonoc-project --region ams --size 1 --yes
+          fi
+          flyctl scale count app=1 --region ams --yes
+          machines="$(flyctl machines list --app autonoc-project --json)"
+          keep_id="$(jq -r '[.[] | select(.region == "ams" and .state == "started")][0].id // empty' <<< "$machines")"
+          if [[ -z "$keep_id" ]]; then
+            echo "No started simulation machine found in primary region ams." >&2
+            exit 1
+          fi
+          while IFS= read -r machine_id; do
+            [[ -z "$machine_id" ]] && continue
+            echo "Removing extra machine $machine_id before deploy (keeping $keep_id in ams)."
+            flyctl machine destroy "$machine_id" --app autonoc-project --force
+          done < <(jq -r --arg keep "$keep_id" '.[] | select(.id != $keep) | .id' <<< "$machines")
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
       - name: Deploy app
         run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Keep one primary-region simulation machine
+        run: |
+          set -euo pipefail
+          flyctl scale count app=1 --region ams --yes
+          machines="$(flyctl machines list --app autonoc-project --json)"
+          keep_id="$(jq -r '[.[] | select(.region == "ams" and .state == "started")][0].id // empty' <<< "$machines")"
+          if [[ -z "$keep_id" ]]; then
+            echo "No started simulation machine found in primary region ams." >&2
+            exit 1
+          fi
+          while IFS= read -r machine_id; do
+            [[ -z "$machine_id" ]] && continue
+            echo "Removing extra simulation machine $machine_id (keeping $keep_id in ams)."
+            flyctl machine destroy "$machine_id" --app autonoc-project --force
+          done < <(jq -r --arg keep "$keep_id" '.[] | select(.id != $keep) | .id' <<< "$machines")
+          remaining="$(flyctl machines list --app autonoc-project --json)"
+          count="$(jq '[.[] | select(.state != "destroyed")] | length' <<< "$remaining")"
+          if [[ "$count" -ne 1 ]] || [[ "$(jq -r '.[0].region' <<< "$remaining")" != "ams" ]]; then
+            echo "Expected exactly one simulation machine in ams; post-deploy Fly state did not converge." >&2
+            exit 1
+          fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

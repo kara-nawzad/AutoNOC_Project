@@ -12,12 +12,18 @@ from autonoc.engine.engine import NOCEngine
 
 
 @pytest.fixture
-def world(monkeypatch):
+def world(monkeypatch, tmp_path):
+    from autonoc.api.run_history import RunSummaryStore
+
     engine = NOCEngine(seed=42, horizon=600)
     monkeypatch.setattr(M, "engine", engine)
     monkeypatch.setattr(M, "worker", None)
     monkeypatch.setattr(M, "_history", P.History())
     monkeypatch.setattr(M, "_speed", 1.0)
+    monkeypatch.setattr(M, "_run_id", "test-run")
+    monkeypatch.setattr(M, "_reset_notice", False)
+    monkeypatch.setattr(M, "_run_error", None)
+    monkeypatch.setattr(M, "_summary_store", RunSummaryStore(tmp_path))
     return engine
 
 
@@ -51,7 +57,7 @@ def test_same_tick_controls_arrive_while_paused(world):
     client = TestClient(M.app)
     before = client.get('/api/delta?since=1').json()
     nid = world.nodes[0].node_id
-    assert client.post('/api/control/inject', params={"node_id": nid, "kind": 3}).status_code == 200
+    assert client.post('/api/control/inject', params={"node_id": nid, "kind": 3, "run_id": M._run_id}).status_code == 200
     after = client.get('/api/delta?since=1').json()
     assert before['tick'] == after['tick'] == 1
     assert after['nodes'][0]['status'] == C.STATUS_RF
@@ -61,11 +67,12 @@ def test_same_tick_controls_arrive_while_paused(world):
 
 def test_pause_resume_and_single_step(world):
     client = TestClient(M.app)
-    client.post('/api/control/pause')
+    params = {"run_id": M._run_id}
+    client.post('/api/control/pause', params=params)
     assert get_delta(0)['control']['paused']
-    client.post('/api/control/step')
+    client.post('/api/control/step', params=params)
     assert world.tick == 1 and world.paused
-    client.post('/api/control/resume')
+    client.post('/api/control/resume', params=params)
     assert not get_delta(1)['control']['paused']
 
 
@@ -78,6 +85,40 @@ def test_history_is_bounded_and_reads_do_not_mutate(world):
     rows = get_delta(40)['dashboard']['history']
     assert len(rows) == 30
     assert [r['tick'] for r in rows] == list(range(11, 41))
+
+
+def test_history_reset_starts_with_the_day_one_sample():
+    engine = NOCEngine(seed=7, horizon=600)
+    history = P.History()
+    history.reset(engine)
+    rows = history.read_window(engine, P.sample(engine), 7)
+    assert len(rows) == 1
+    assert rows[0]["tick"] == 0
+    assert rows[0]["sim_time"] == engine.sim_time
+
+
+def test_timeframe_history_uses_current_run_samples_and_exact_sim_window(world):
+    for _ in range(40):
+        M._step_locked()
+
+    client = TestClient(M.app)
+    params = {"run_id": M._run_id}
+    recent = client.get("/api/telemetry/history", params={**params, "timeframe": "30m"})
+    assert recent.status_code == 200
+    recent_body = recent.json()
+    assert recent_body["tick_minutes"] == C.TICK_MINUTES
+    assert [row["tick"] for row in recent_body["samples"]] == list(range(34, 41))
+
+    day = client.get("/api/telemetry/history", params={**params, "timeframe": "24h"})
+    week = client.get("/api/telemetry/history", params={**params, "timeframe": "7d"})
+    assert len(day.json()["samples"]) == len(week.json()["samples"]) == 40
+    assert day.json()["samples"][-1]["tick"] == week.json()["samples"][-1]["tick"] == 40
+    assert client.get(
+        "/api/telemetry/history", params={"timeframe": "7d", "run_id": "stale-run"}
+    ).status_code == 409
+    assert client.get(
+        "/api/telemetry/history", params={"timeframe": "5y", "run_id": M._run_id}
+    ).status_code == 422
 
 
 def test_dashboard_is_derived_from_engine(world):
@@ -125,10 +166,11 @@ def test_config_has_all_semantics_and_supported_faults(world):
 
 def test_control_errors_are_actionable(world):
     client = TestClient(M.app)
-    assert client.post('/api/control/inject', params={'node_id': 'unknown', 'kind': 3}).status_code == 404
-    assert client.post('/api/control/speed?value=100').status_code == 422
-    assert client.post('/api/control/cut-fiber?cause=%3Cb%3Eunsafe%3C/b%3E').status_code == 422
-    assert client.post('/api/control/approve/999').json()['ok'] is False
+    run_id = M._run_id
+    assert client.post('/api/control/inject', params={'node_id': 'unknown', 'kind': 3, 'run_id': run_id}).status_code == 404
+    assert client.post(f'/api/control/speed?value=100&run_id={run_id}').status_code == 422
+    assert client.post(f'/api/control/cut-fiber?cause=%3Cb%3Eunsafe%3C/b%3E&run_id={run_id}').status_code == 422
+    assert client.post(f'/api/control/approve/999?run_id={run_id}').json()['ok'] is False
 
 
 def test_complete_snapshot_resets_legacy_consumers(world):

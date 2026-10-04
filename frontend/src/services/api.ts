@@ -1,4 +1,11 @@
-import type { ActionResult, Config, Snapshot } from "../types/api";
+import type {
+  ActionResult,
+  Config,
+  RunHistory,
+  Snapshot,
+  TelemetryHistory,
+  TelemetryTimeframe,
+} from "../types/api";
 
 /** Relative paths deliberately use Vite's proxy / FastAPI's same origin. */
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -25,7 +32,8 @@ export function validateSnapshot(value: Snapshot): Snapshot {
     !value.dashboard ||
     !value.control ||
     !Array.isArray(value.nodes) ||
-    !Number.isFinite(value.tick)
+    !Number.isFinite(value.tick) ||
+    typeof value.run_id !== "string"
   ) {
     throw new Error(
       "Dashboard API mismatch. Restart the updated AutoNOC backend.",
@@ -35,16 +43,22 @@ export function validateSnapshot(value: Snapshot): Snapshot {
 }
 async function control(
   path: string,
+  runId: string,
   params: Record<string, string | number | boolean> = {},
 ): Promise<ActionResult> {
   const query = new URLSearchParams(
-    Object.entries(params).map(([key, val]) => [key, String(val)]),
+    Object.entries({ ...params, run_id: runId }).map(([key, val]) => [
+      key,
+      String(val),
+    ]),
   );
   const result = await request<ActionResult>(`/api/control/${path}?${query}`, {
     method: "POST",
   });
-  if (result.ok === false)
-    throw new Error(result.reason || "The engine rejected this action.");
+  if (result.ok === false || typeof result.error === "string")
+    throw new Error(
+      result.reason || result.error || "The engine rejected this action.",
+    );
   return result;
 }
 export const api = {
@@ -53,20 +67,25 @@ export const api = {
     validateSnapshot(
       await request<Snapshot>(`/api/delta?since=${cursor}`, { signal }),
     ),
-  pause: () => control("pause"),
-  resume: () => control("resume"),
-  step: () => control("step"),
-  speed: (value: number) => control("speed", { value }),
-  cut: (ring: number) =>
-    control("cut-fiber", {
+  history: () => request<RunHistory>("/api/history"),
+  telemetryHistory: (timeframe: TelemetryTimeframe, runId: string) => {
+    const query = new URLSearchParams({ timeframe, run_id: runId });
+    return request<TelemetryHistory>(`/api/telemetry/history?${query}`);
+  },
+  pause: (runId: string) => control("pause", runId),
+  resume: (runId: string) => control("resume", runId),
+  step: (runId: string) => control("step", runId),
+  speed: (value: number, runId: string) => control("speed", runId, { value }),
+  cut: (ring: number, runId: string) =>
+    control("cut-fiber", runId, {
       ring_id: ring,
       isolate: true,
       cause: "construction",
     }),
-  inject: (node: string, kind: number) =>
-    control("inject", { node_id: node, kind }),
-  ai: (enabled: boolean, autoApprove = 0) =>
-    control("ai", { enabled, auto_approve_seconds: autoApprove }),
-  approve: (id: number) => control(`approve/${id}`),
-  veto: (id: number) => control(`veto/${id}`),
+  inject: (node: string, kind: number, runId: string) =>
+    control("inject", runId, { node_id: node, kind }),
+  ai: (enabled: boolean, runId: string, autoApprove = 0) =>
+    control("ai", runId, { enabled, auto_approve_seconds: autoApprove }),
+  approve: (id: number, runId: string) => control(`approve/${id}`, runId),
+  veto: (id: number, runId: string) => control(`veto/${id}`, runId),
 };

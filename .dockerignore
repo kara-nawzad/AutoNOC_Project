@@ -1,17 +1,47 @@
-.git/
-.github/
+# Git metadata and developer-only files
+.git
+.github
+.vscode
+.idea
+
+# Python environments, bytecode, caches, and test output
+.venv
+venv
+env
+ENV
 **/__pycache__/
+**/*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.tox
+.nox
+coverage
+htmlcov
+**/tests
+**/*.test.*
+**/*.spec.*
+
+# Node dependencies and generated frontend/test output
+**/node_modules
+frontend/.vite
+frontend/.npm
+frontend/dist
+autonoc/web/dist
+**/test-results
+**/playwright-report
+*.tsbuildinfo
+
+# Local secrets and environment-specific configuration
 .env
 .env.*
 .envrc
-.venv/
-venv/
-**/node_modules/
-**/dist/
-**/test-results/
-**/playwright-report/
-**/*.tsbuildinfo
-data/
+
+# Local runtime data and logs (model artifacts are intentionally retained)
+data
 *.log
 *.err
-.pytest_cache/
+
+# Documentation is not required by the runtime image or frontend build
+*.md
+**/*.md
